@@ -1,35 +1,81 @@
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any
 from .models import ClassificationResult, DetectorSignals, Citation
 from .prompt_lib import get_prompt
 from .llm_client import call_llm
 
-def _run_prompt(name: str, pages: Dict[int, str], extra: Dict[str, Any] = None) -> Any:
+TRUNCATE_CHARS = 1200
+
+def _prepare_pages(pages: Dict[int, str]) -> Dict[int, str]:
+    prepared = {}
+    for page_num, text in sorted(pages.items()):
+        snippet = (text or "").strip()
+        if len(snippet) > TRUNCATE_CHARS:
+            snippet = snippet[:TRUNCATE_CHARS].rsplit(" ", 1)[0] + " …"
+        prepared[page_num] = snippet
+    return prepared
+
+def _run_prompt(name: str,
+                pages: Dict[int, str],
+                extra: Dict[str, Any] = None,
+                override_pages: Dict[int, str] = None) -> Any:
     prompt_cfg = get_prompt(name)
     content_payload = {
-        "pages": pages,
+        "pages": _prepare_pages(override_pages or pages),
+        "page_count": len(pages),
         "extra": extra or {}
     }
     messages = [
         {"role": prompt_cfg["role"], "content": prompt_cfg["content"]},
         {"role": "user", "content": json.dumps(content_payload)}
     ]
-    resp = call_llm(messages)
+    try:
+        resp = call_llm(messages)
+    except Exception as exc:
+        # propagate a mock payload so downstream nodes can fall back gracefully
+        return {"mock": True, "error": str(exc), "prompt_node": name}
     return resp  # expected to be JSON-like per prompt instructions
 
 def classify_document(doc_id: str,
                       pages: Dict[int, str],
                       signals: DetectorSignals) -> ClassificationResult:
+    prompt_errors = []
+    summary_pages: Dict[int, str] = {}
+
+    def _has_error(output: Any, node: str):
+        if isinstance(output, dict) and output.get("mock"):
+            prompt_errors.append(node)
+
     # Node 1: precheck
     precheck_out = _run_prompt("precheck", pages)
+    _has_error(precheck_out, "precheck")
+    if isinstance(precheck_out, list):
+        for entry in precheck_out:
+            if isinstance(entry, dict):
+                page = entry.get("page")
+                summary = entry.get("summary")
+                if page and summary:
+                    summary_pages[page] = summary
 
     # Node 2: PII-specific (only if needed)
     pii_out = None
     if signals.has_pii:
-        pii_out = _run_prompt("pii_scan", pages, extra={"detectors": signals.dict()})
+        pii_out = _run_prompt(
+            "pii_scan",
+            pages,
+            extra={"detectors": signals.dict()},
+            override_pages=summary_pages or None,
+        )
+        _has_error(pii_out, "pii_scan")
 
     # Node 3: unsafe scan (always if any pattern OR as safety net)
-    unsafe_out = _run_prompt("unsafe_scan", pages, extra={"detectors": signals.dict()})
+    unsafe_out = _run_prompt(
+        "unsafe_scan",
+        pages,
+        extra={"detectors": signals.dict()},
+        override_pages=summary_pages or None,
+    )
+    _has_error(unsafe_out, "unsafe_scan")
 
     # Node 4: confidentiality scan
     conf_out = _run_prompt(
@@ -41,7 +87,9 @@ def classify_document(doc_id: str,
             "pii_scan": pii_out,
             "unsafe_scan": unsafe_out,
         },
+        override_pages=summary_pages or None,
     )
+    _has_error(conf_out, "confidentiality_scan")
 
     # Node 5: final decision: combine everything.
     final_out = _run_prompt(
@@ -54,7 +102,9 @@ def classify_document(doc_id: str,
             "unsafe_scan": unsafe_out,
             "confidentiality_scan": conf_out,
         },
+        override_pages=summary_pages or None,
     )
+    _has_error(final_out, "final_decision")
 
     # Parse final_out (assuming LLM returns proper JSON per instructions).
     # Here we handle both real JSON or stubbed mock.
@@ -80,6 +130,7 @@ def classify_document(doc_id: str,
                 _fallback_decision(signals)
             )
 
+<<<<<<< HEAD
     if signals.has_unsafe_pattern:
         requires_review = True
     elif final_category in ["Unsafe","Highly Sensitive"]:
@@ -88,6 +139,13 @@ def classify_document(doc_id: str,
         requires_review = True
     else:
         requires_review = False
+=======
+    requires_review = (
+        confidence < 0.75
+        or signals.has_unsafe_pattern
+        or bool(prompt_errors)
+    )
+>>>>>>> origin/main
 
     return ClassificationResult(
         doc_id=doc_id,
@@ -97,7 +155,7 @@ def classify_document(doc_id: str,
         citations=citations,
         explanation=explanation,
         raw_signals=signals,
-        llm_payload=None,  # optionally attach pieces for debugging
+        llm_payload={"prompt_errors": prompt_errors} if prompt_errors else None,
         requires_review=requires_review,
     )
 
