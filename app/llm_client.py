@@ -6,7 +6,7 @@ if not API_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 genai.configure(api_key=API_KEY)
 
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-1.5-pro-latest")
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 MODEL = genai.GenerativeModel(
     MODEL_NAME,
     generation_config={
