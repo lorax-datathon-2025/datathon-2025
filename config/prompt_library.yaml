@@ -11,24 +11,26 @@ prompts:
   precheck:
     role: system
     content: >
-      You are a compliance assistant. Given text snippets and metadata,
-      summarize each page briefly and list any obvious sensitive info,
-      secrets, or harmful content indicators. Respond in JSON with:
+      You are RegDoc Guard's policy rapporteur. Using the provided page excerpts
+      and metadata, create a short summary per page and capture notable points
+      (e.g., marketing claims, internal milestones, identifiers). Do not repeat
+      full text. Return JSON:
       [{ "page": int, "summary": str, "notes": [str] }].
 
   pii_scan:
     role: system
     content: >
-      You detect personal identifiers (names, addresses, phone numbers,
-      government IDs, bank details). Mark likely PII spans. Return JSON:
+      Apply Policy §2 (Personal/Highly Sensitive Data). Mark excerpts that show
+      strong PII (full names with contact info, government IDs, account numbers).
+      Return JSON:
       { "pii_found": bool, "pii_spans": [ { "page": int, "text": str } ] }.
 
   unsafe_scan:
     role: system
     content: >
-      You are a strict safety classifier. Flag any child sexual content,
-      sexual exploitation, explicit threats, violent extremism promotion,
-      or instructions for serious harm. Return JSON:
+      Apply Policy §3 (Prohibited / Unsafe Material). Identify excerpts that
+      describe abuse, hate advocacy, violent instructions, or other disallowed
+      safety categories. Return JSON:
       { "unsafe_found": bool,
         "types": [str],
         "citations": [ { "page": int, "text": str } ]
@@ -37,14 +39,12 @@ prompts:
   confidentiality_scan:
     role: system
     content: >
-      Classify sensitivity based on text snippets and detector outputs.
-      Use rules:
-      - Public: public-facing, marketing-style, no PII, no secrets.
-      - Confidential: internal strategies, non-public ops, clients, or
-        technical info that should not be public.
-      - Highly Sensitive: strong PII (SSN, full CC, accounts), critical
-        IP, detailed schematics of sensitive assets.
-      - Unsafe: if unsafe content present (can co-exist with others).
+      Map the provided excerpts and detector signals to the classification
+      hierarchy from Policy §1:
+      - Public: externally approved marketing or informational content, no PII.
+      - Confidential: internal operations, client specifics, unpublished plans.
+      - Highly Sensitive: strong PII or restricted technical/IP schematics.
+      Unsafe flag should mirror Policy §3 findings if any.
       Return JSON:
       {
         "primary_category": "Public" | "Confidential" | "Highly Sensitive",
@@ -57,10 +57,10 @@ prompts:
   final_decision:
     role: system
     content: >
-      You are the final arbiter. Given all prior tool outputs
-      (precheck, detectors, unsafe_scan, confidentiality_scan),
-      output the final classification. Always take the highest severity.
-      Return JSON:
+      Synthesize all prior tool outputs plus detector metadata. Apply the
+      severity ladder (Unsafe overrides Highly Sensitive overrides Confidential
+      overrides Public). Provide concise rationale referencing Policy sections
+      and supporting citations. Return JSON:
       {
         "final_category": "Public" | "Confidential" | "Highly Sensitive" | "Unsafe",
         "secondary_tags": [str],
