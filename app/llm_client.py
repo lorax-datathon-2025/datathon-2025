@@ -48,16 +48,10 @@ def _extract_text(candidate) -> str:
     return "".join(text_chunks).strip()
 
 def call_llm(messages: List[Dict[str, str]]) -> Dict[str, Any]:
-    """
-    Implement actual LLM call here.
-    For the datathon, this stub can be replaced with the provided endpoint.
-    Must return JSON-deserializable content (we assume tool prompts enforce JSON).
-    """
-    # Placeholder: echo-style fake result to keep pipeline testable.
-    # In real implementation, you:
-    # - send `messages` to LLM
-    # - parse JSON from response
-    return {"mock": True, "messages": messages}
+    formatted = []
+    for msg in messages:
+        role = ROLE_MAP.get(msg["role"], msg["role"])
+        formatted.append({"role": role, "parts": [{"text": msg["content"]}]})
 
     try:
         response = MODEL.generate_content(
@@ -76,6 +70,10 @@ def call_llm(messages: List[Dict[str, str]]) -> Dict[str, Any]:
 
         text = _extract_text(candidate)
         if not text:
+            raise ValueError("Gemini response did not contain text output")
+        return json.loads(text)
+    except Exception as exc:
+        raise RuntimeError(f"Gemini call failed: {exc}") from exc
             raise ValueError("Gemini response did not contain text output")
         return json.loads(text)
     except Exception as exc:
