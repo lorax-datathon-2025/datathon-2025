@@ -44,37 +44,39 @@ Machine-readable results ready for dashboards or downstream compliance tools.
 ---
 
 ## Repository Structure
+```plaintext
 DATATHON-2025/
-├── app/ # Core application logic
-│ ├── init.py
-│ ├── db.py # Database connection and query helpers
-│ ├── detectors.py # Runs PII, safety, and confidentiality detection
-│ ├── hitl.py # Human-in-the-loop (review and approval)
-│ ├── job_processor.py # Queues and manages classification tasks
-│ ├── llm_client.py # API client for primary LLM
-│ ├── main.py # FastAPI entrypoint / orchestrator
-│ ├── models.py # Pydantic models and data schemas
-│ ├── orchestrator.py # Main coordination layer for multi-step pipelines
-│ ├── prompt_lib.py # Centralized prompt definitions
-│ ├── secondary_llm.py # Secondary or fallback model handler
-│ ├── storage.py # Local or cloud storage integration
-│ └── utils_text.py # Text cleaning, tokenization, summarization utils
+├── app/                           # Core backend logic
+│   ├── __init__.py
+│   ├── db.py                      # Database connection and query helpers
+│   ├── detectors.py               # Runs PII, safety, and confidentiality detection
+│   ├── hitl.py                    # Human-in-the-loop review & approval
+│   ├── job_processor.py           # Queues and manages classification jobs
+│   ├── llm_client.py              # API client for primary LLM
+│   ├── main.py                    # FastAPI entrypoint / orchestrator
+│   ├── models.py                  # Pydantic models and data schemas
+│   ├── orchestrator.py            # Main coordinator for multi-step pipelines
+│   ├── prompt_lib.py              # Centralized prompt templates
+│   ├── secondary_llm.py           # Secondary / fallback model handler
+│   ├── storage.py                 # Local or cloud storage integration
+│   └── utils_text.py              # Text cleaning, tokenization, summarization utils
 │
 ├── config/
-│ └── prompt_library.yaml # YAML prompt templates and policy configurations
+│   └── prompt_library.yaml        # YAML prompt templates & classification policy
 │
-├── data/ # Sample datasets or test files
+├── data/                          # Example datasets or test files
 │
-├── frontend/ 
-│ └── fastapi # FastAPI-based frontend UI and API endpoints
-├── test/ # Unit and integration tests
-│ └── init.py
+├── frontend/
+│   └── fastapi/                   # FastAPI-based frontend UI and REST endpoints
 │
-├── .env # Environment variables (API keys, DB URI)
+├── test/                          # Unit and integration tests
+│   └── __init__.py
+│
+├── .env                           # Environment variables (API keys, DB URI)
 ├── .gitignore
-├── README.md # This documentation
-└── requirements.txt # Python dependencies
-
+├── README.md                      # This documentation
+└── requirements.txt               # Python dependencies
+```
 
 ---
 
