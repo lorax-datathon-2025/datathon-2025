@@ -7,6 +7,7 @@ os.makedirs(BASE_DIR, exist_ok=True)
 
 DOCS_META: Dict[str, Any] = {}
 DOCS_TEXT: Dict[str, Any] = {}
+DOCS_IMAGES: Dict[str, Any] = {}
 DOCS_AUDIT: Dict[str, Any] = {}
 
 def save_document(file_bytes: bytes, filename: str) -> str:
@@ -22,7 +23,7 @@ def save_document(file_bytes: bytes, filename: str) -> str:
     }
     return doc_id
 
-def save_extracted(doc_id: str, pages: Dict[int, str], images_count: int):
+def save_extracted(doc_id: str, pages: Dict[int, str], images_count: int, images_data: list = None):
     meta = DOCS_META[doc_id]
     meta.update({
         "page_count": len(pages),
@@ -30,9 +31,14 @@ def save_extracted(doc_id: str, pages: Dict[int, str], images_count: int):
         "status": "preprocessed"
     })
     DOCS_TEXT[doc_id] = pages
+    if images_data:
+        DOCS_IMAGES[doc_id] = images_data
 
 def get_document_pages(doc_id: str) -> Dict[int, str]:
     return DOCS_TEXT.get(doc_id, {})
+
+def get_document_images(doc_id: str) -> list:
+    return DOCS_IMAGES.get(doc_id, [])
 
 def get_meta(doc_id: str) -> dict:
     return DOCS_META.get(doc_id, {})

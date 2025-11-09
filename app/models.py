@@ -29,9 +29,14 @@ class ClassificationResult(BaseModel):
     confidence: float
     citations: List[Citation]
     explanation: str
+    page_count: int
+    image_count: int
+    content_safety: str
     raw_signals: DetectorSignals
     llm_payload: Optional[Dict[str, Any]] = None
     requires_review: bool = False
+    dual_llm_agreement: Optional[float] = None  # 0-1: how much the two LLMs agree
+    dual_llm_disagreements: Optional[List[str]] = None  # List of fields where LLMs disagree
 
 class HITLUpdate(BaseModel):
     doc_id: str

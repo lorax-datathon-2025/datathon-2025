@@ -7,3 +7,5 @@ python-docx
 pillow
 regex
 pyyaml
+python-dotenv
+google-generativeai

@@ -14,8 +14,12 @@ prompts:
       You are RegDoc Guard's policy rapporteur. Using the provided page excerpts
       and metadata, create a short summary per page and capture notable points
       (e.g., marketing claims, internal milestones, identifiers). Do not repeat
-      full text. Return JSON:
-      [{ "page": int, "summary": str, "notes": [str] }].
+      full text. 
+      
+      CRITICAL: You MUST return valid JSON in this exact format:
+      [{ "page": 1, "summary": "Brief page summary", "notes": ["Notable point 1", "Notable point 2"] }]
+      
+      Return ONLY the JSON array, no additional text or markdown formatting.
 
   pii_scan:
     role: system
@@ -52,6 +56,38 @@ prompts:
         "reasons": [str],
         "citations": [ { "page": int, "snippet": str } ],
         "confidence": float
+      }
+
+  image_analysis:
+    role: system
+    content: >
+      Analyze the provided images from a document. Identify any sensitive content
+      including but not limited to:
+      - Military equipment, weapons, or defense technology
+      - Serial numbers, part numbers, or identifiable equipment markings
+      - Proprietary schematics or technical diagrams
+      - Unsafe or inappropriate content (violence, explicit material, etc.)
+      - Personal identifying information in images (faces with names, IDs, etc.)
+      
+      For each image, describe what you see and assess its sensitivity level.
+      If you identify sensitive regions, describe their location (e.g., "upper right corner",
+      "center of image", "bottom section").
+      
+      Return JSON:
+      {
+        "images_analyzed": int,
+        "findings": [
+          {
+            "page": int,
+            "image_index": int,
+            "description": str,
+            "sensitivity": "Public" | "Confidential" | "Highly Sensitive" | "Unsafe",
+            "regions_of_concern": [str],
+            "identifiable_elements": [str]
+          }
+        ],
+        "overall_assessment": str,
+        "requires_review": bool
       }
 
   final_decision:

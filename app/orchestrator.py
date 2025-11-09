@@ -1,8 +1,8 @@
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List
 from .models import ClassificationResult, DetectorSignals, Citation
 from .prompt_lib import get_prompt
-from .llm_client import call_llm
+from .llm_client import call_llm, call_llm_with_images
 import google.generativeai as genai
 import os, json, re
 
@@ -11,11 +11,24 @@ TRUNCATE_CHARS = 1200
 def get_gemini_reasoning(doc_text: str):
     """Call Gemini to generate structured reasoning about the document."""
     try:
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel(os.getenv("GEMINI_MODEL", "models/gemini-2.5-pro"))
+        # API is already configured in llm_client
+        model_name = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash-exp")
+        model = genai.GenerativeModel(model_name)
+
+        # Safety settings to allow analysis of potentially unsafe content
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUAL", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
 
         prompt = f"""
-        You are an AI document analyst assisting a classification system.
+        You are an AI document analyst for a compliance and safety classification system.
+        
+        IMPORTANT: You are ANALYZING content for safety violations, not creating harmful content.
+        Your job is to DETECT and CLASSIFY potentially unsafe material so it can be flagged for review.
+        
         Review the text below and respond ONLY in valid JSON with this structure. 
             -Critical information is any sensitive data.
             -Sensitivity
@@ -26,7 +39,7 @@ def get_gemini_reasoning(doc_text: str):
             -Confidence: give us a rating 0-1 of how confident you are about the rating of the sensitivity.
             - Content Safety: Evaluated for Child Safety and should not include Hate speech, exploitative, violent, criminal, political news or cyber-threat content.
                 - If safe say "Content is safe for kids"
-                - If not print the information that isn't safe, keep it short.
+                - If unsafe, DESCRIBE the safety violations found (e.g., "Contains violent imagery", "Contains hate speech targeting [group]", "Contains explicit content")
 :
         {{
         "Critical_info": [string],
@@ -41,7 +54,23 @@ def get_gemini_reasoning(doc_text: str):
         {doc_text[:5000]}
         """
 
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        
+        # Check if response was blocked by safety filters
+        if not response.candidates:
+            return {"error": "Gemini blocked by safety filters (no candidates returned)"}
+        
+        candidate = response.candidates[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
+        
+        # Check if blocked by safety
+        if finish_reason not in (None, 1, "STOP"):
+            safety_ratings = getattr(candidate, "safety_ratings", [])
+            return {
+                "error": f"Gemini blocked output (finish_reason={finish_reason})",
+                "safety_ratings": str(safety_ratings)
+            }
+        
         raw = response.text.strip()
 
         try:
@@ -50,7 +79,7 @@ def get_gemini_reasoning(doc_text: str):
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             return json.loads(match.group(0)) if match else {"error": "Could not parse Gemini JSON", "raw": raw}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "error_type": type(e).__name__}
     
 
 def _prepare_pages(pages: Dict[int, str]) -> Dict[int, str]:
@@ -85,13 +114,41 @@ def _run_prompt(name: str,
 
 def classify_document(doc_id: str,
                       pages: Dict[int, str],
-                      signals: DetectorSignals) -> ClassificationResult:
+                      signals: DetectorSignals,
+                      image_count: int = 0,
+                      images_data: List[Dict] = None) -> ClassificationResult:
+    if images_data is None:
+        images_data = []
     prompt_errors = []
     summary_pages: Dict[int, str] = {}
+    image_analysis_out = None
 
     def _has_error(output: Any, node: str):
         if isinstance(output, dict) and output.get("mock"):
             prompt_errors.append(node)
+    
+    def _dedupe_citations(citations: List[Citation]) -> List[Citation]:
+        """Remove duplicate citations based on page and snippet similarity."""
+        seen = set()
+        unique = []
+        for cite in citations:
+            # Create a normalized key (page + first 100 chars of snippet)
+            key = (cite.page, cite.snippet[:100].strip())
+            if key not in seen:
+                seen.add(key)
+                unique.append(cite)
+        return unique
+
+    # Node 0: Image analysis (if images present)
+    if images_data and len(images_data) > 0:
+        try:
+            prompt_cfg = get_prompt("image_analysis")
+            prompt_text = prompt_cfg["content"]
+            image_analysis_out = call_llm_with_images(prompt_text, images_data)
+        except Exception as exc:
+            print(f"Image analysis error: {exc}")
+            image_analysis_out = {"mock": True, "error": str(exc), "prompt_node": "image_analysis"}
+            _has_error(image_analysis_out, "image_analysis")
 
     # Node 1: precheck
     precheck_out = _run_prompt("precheck", pages)
@@ -148,6 +205,7 @@ def classify_document(doc_id: str,
             "pii_scan": pii_out,
             "unsafe_scan": unsafe_out,
             "confidentiality_scan": conf_out,
+            "image_analysis": image_analysis_out,
         },
         override_pages=summary_pages or None,
     )
@@ -162,7 +220,7 @@ def classify_document(doc_id: str,
         )
     else:
         try:
-            # if model returns as JSON string in "content" you’d parse here
+            # if model returns as JSON string in "content" you'd parse here
             data = final_out if isinstance(final_out, dict) else json.loads(final_out)
             final_category = data["final_category"]
             secondary_tags = data.get("secondary_tags", [])
@@ -171,8 +229,20 @@ def classify_document(doc_id: str,
                 Citation(page=c["page"], snippet=c["snippet"])
                 for c in data.get("citations", [])
             ]
+            # Deduplicate citations to remove duplicates from node aggregation
+            citations = _dedupe_citations(citations)
             explanation = data.get("explanation", "")
-        except Exception:
+            
+            # Add image findings to citations if present
+            if image_analysis_out and not image_analysis_out.get("mock"):
+                for finding in image_analysis_out.get("findings", []):
+                    if finding.get("regions_of_concern"):
+                        snippet = f"[Image {finding['image_index']}] {finding['description']}"
+                        if finding.get("regions_of_concern"):
+                            snippet += f" - Regions: {', '.join(finding['regions_of_concern'])}"
+                        citations.append(Citation(page=finding["page"], snippet=snippet))
+        except Exception as e:
+            print(f"Error parsing final_out: {e}")
             final_category, secondary_tags, confidence, citations, explanation = (
                 _fallback_decision(signals)
             )
@@ -186,56 +256,131 @@ def classify_document(doc_id: str,
     else:
         requires_review = False """
     
+    # Store prompt tree results (LLM #1)
+    prompt_tree_result = {
+        "final_category": final_category,
+        "secondary_tags": secondary_tags,
+        "confidence": confidence,
+        "citations": citations,
+        "explanation": explanation,
+        "source": "prompt_tree"
+    }
+
+    # Run second LLM opinion (LLM #2: get_gemini_reasoning)
+    document_text = "\n".join(pages.values())
+    try:
+        gemini_result = get_gemini_reasoning(document_text)
+    except Exception as e:
+        print(f"Error in get_gemini_reasoning: {e}")
+        gemini_result = {"error": str(e)}
+
+
+    # Compare both LLM outputs and calculate agreement
+    agreement_score, disagreements = _compute_llm_agreement(prompt_tree_result, gemini_result)
+    
+    # Decision: Use the more restrictive classification if there's disagreement
+    final_category_to_use = _resolve_category_conflict(
+        prompt_tree_result["final_category"],
+        gemini_result.get("Sensitivity") if "error" not in gemini_result else None
+    )
+    
+    # Use data from the LLM that made the final decision
+    if final_category_to_use == gemini_result.get("Sensitivity") and "error" not in gemini_result:
+        final_confidence = gemini_result.get("Confidence", confidence)
+        final_explanation = gemini_result.get("Reasoning", explanation)
+        final_tags = gemini_result.get("Critical_info", secondary_tags) if isinstance(gemini_result.get("Critical_info"), list) else secondary_tags
+    else:
+        final_confidence = confidence
+        final_explanation = explanation
+        final_tags = secondary_tags
+
+    # Determine if review is required
     requires_review = (
-        confidence < 0.8
+        final_confidence < 0.8
         or signals.has_unsafe_pattern
         or bool(prompt_errors)
+        or agreement_score < 0.7  # Flag if LLMs disagree significantly
+        or len(disagreements) > 0
     )
 
+    # Build llm_payload with both LLM outputs
+    llm_payload = {
+        "prompt_errors": prompt_errors if prompt_errors else [],
+        "prompt_tree": prompt_tree_result,
+        "gemini": gemini_result,
+        "dual_llm_validation": {
+            "agreement_score": agreement_score,
+            "disagreements": disagreements,
+            "resolution_strategy": "most_restrictive"
+        }
+    }
 
-    result =  ClassificationResult(
+    return ClassificationResult(
         doc_id=doc_id,
-        final_category=final_category,  # type: ignore
-        secondary_tags=secondary_tags,
-        confidence=confidence,
+        final_category=final_category_to_use,
+        secondary_tags=final_tags,
+        confidence=final_confidence,
+        explanation=final_explanation,
+        page_count=len(pages),
+        image_count=image_count,
+        content_safety=gemini_result.get("Content_safety", "Content is safe for kids") if "error" not in gemini_result else "Content is safe for kids",
         citations=citations,
-        explanation=explanation,
         raw_signals=signals,
-        llm_payload={"prompt_errors": prompt_errors} if prompt_errors else None,
+        llm_payload=llm_payload,
         requires_review=requires_review,
+        dual_llm_agreement=agreement_score,
+        dual_llm_disagreements=disagreements if disagreements else None
     )
 
-    document_text = "\n".join(pages.values())
-    gemini_result = get_gemini_reasoning(document_text)
 
-    if "error" not in gemini_result:
-        # Store Gemini’s full structured output
-        if result.llm_payload:
-            result.llm_payload["gemini"] = gemini_result
-        else:
-            result.llm_payload = {"gemini": gemini_result}
 
-    # Replace or append reasoning
-    if "reasoning" in gemini_result:
-        result.explanation = gemini_result["reasoning"]
+def _compute_llm_agreement(prompt_tree_result: Dict[str, Any], gemini_result: Dict[str, Any]) -> tuple:
+    """Compare two LLM outputs and return (agreement_score, list_of_disagreements)."""
+    if "error" in gemini_result:
+        return 0.0, ["gemini_error"]
+    
+    disagreements = []
+    score_components = []
+    
+    # Compare categories
+    pt_cat = prompt_tree_result.get("final_category", "")
+    gem_cat = gemini_result.get("Sensitivity", "")
+    if pt_cat == gem_cat:
+        score_components.append(1.0)
+    else:
+        score_components.append(0.0)
+        disagreements.append(f"category: prompt_tree={pt_cat}, gemini={gem_cat}")
+    
+    # Compare confidence (within 0.2 is considered agreement)
+    pt_conf = prompt_tree_result.get("confidence", 0.7)
+    gem_conf = gemini_result.get("Confidence", 0.7)
+    if abs(pt_conf - gem_conf) < 0.2:
+        score_components.append(1.0)
+    else:
+        score_components.append(0.5)
+        disagreements.append(f"confidence_gap: {abs(pt_conf - gem_conf):.2f}")
+    
+    # Overall agreement score
+    agreement_score = sum(score_components) / len(score_components)
+    
+    return agreement_score, disagreements
 
-    # Extend tags with Gemini’s identified info
-    if "critical_info" in gemini_result:
-        result.secondary_tags.extend(gemini_result["critical_info"])
 
-    # Update sensitivity if Gemini found it to be more restrictive
-    if result.final_category == "Public" and gemini_result.get("sensitivity"):
-        result.final_category = gemini_result["sensitivity"]
-
-    return {
-    "doc_id": result.doc_id,
-    "final_category": gemini_result.get("Sensitivity", result.final_category),
-    "secondary_tags": gemini_result.get("Critical_info", result.secondary_tags),
-    "confidence": gemini_result.get("Confidence", result.confidence),
-    "explanation": gemini_result.get("Reasoning", result.explanation),
-    "content_safety": gemini_result.get("Content_safety") if "error" not in gemini_result else None
-}
-
+def _resolve_category_conflict(cat1: str, cat2: str = None) -> str:
+    """Resolve conflicting categories by choosing the more restrictive one.
+    Priority: Unsafe > Highly Sensitive > Confidential > Public
+    """
+    if not cat2:
+        return cat1
+    
+    priority = {
+        "Unsafe": 4,
+        "Highly Sensitive": 3,
+        "Confidential": 2,
+        "Public": 1
+    }
+    
+    return cat1 if priority.get(cat1, 0) >= priority.get(cat2, 0) else cat2
 
 
 def _fallback_decision(signals: DetectorSignals):
