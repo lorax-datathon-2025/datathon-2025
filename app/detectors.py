@@ -12,7 +12,16 @@ INTERNAL_MARKERS = [
     "confidential",
     "non-disclosure",
     "nda",
+    "for internal discussion",
+    "company confidential",
+    "proprietary",
 ]
+
+# Memo format pattern (appears near top of document)
+MEMO_PATTERN = re.compile(
+    r"(?:^|\n)\s*(?:to|from|re|subject|date):\s*.+",
+    re.IGNORECASE | re.MULTILINE
+)
 UNSAFE_KEYWORDS = [
     "child sexual",
     "exploit", "molest",
@@ -42,6 +51,11 @@ def run_detectors(pages: Dict[int, str]) -> DetectorSignals:
             signals.has_pii = True
             snippet = text[:200].replace("\n", " ")
             signals.pii_hits.append(Citation(page=page, snippet=snippet))
+
+        # Check for memo format (especially on first page)
+        if page == 1 and MEMO_PATTERN.search(text[:500]):
+            signals.has_internal_markers = True
+            signals.notes.append(f"Memo format detected on page {page}")
 
         # internal (whole word)
         if any(rx.search(lower) for rx in internal_regexes):

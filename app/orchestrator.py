@@ -211,6 +211,28 @@ def classify_document(doc_id: str,
     )
     _has_error(final_out, "final_decision")
 
+    # Track all categories detected across nodes for multi-category scenarios
+    detected_categories = set()
+    
+    # Check unsafe scan
+    if unsafe_out and isinstance(unsafe_out, dict) and unsafe_out.get("unsafe_found"):
+        detected_categories.add("Unsafe")
+    
+    # Check confidentiality scan
+    if conf_out and isinstance(conf_out, dict):
+        primary_cat = conf_out.get("primary_category")
+        if primary_cat:
+            detected_categories.add(primary_cat)
+        if conf_out.get("is_unsafe"):
+            detected_categories.add("Unsafe")
+    
+    # Check image analysis
+    if image_analysis_out and not image_analysis_out.get("mock"):
+        for finding in image_analysis_out.get("findings", []):
+            sensitivity = finding.get("sensitivity")
+            if sensitivity:
+                detected_categories.add(sensitivity)
+
     # Parse final_out (assuming LLM returns proper JSON per instructions).
     # Here we handle both real JSON or stubbed mock.
     if isinstance(final_out, dict) and final_out.get("mock"):
@@ -233,13 +255,36 @@ def classify_document(doc_id: str,
             citations = _dedupe_citations(citations)
             explanation = data.get("explanation", "")
             
+            # Add all detected categories to secondary_tags if multiple categories apply
+            # This allows TC5 to show both "Unsafe" and "Confidential"
+            if len(detected_categories) > 1:
+                # Remove the final_category from detected set to get other applicable categories
+                other_categories = detected_categories - {final_category}
+                # Remove "Public" if there are any higher-sensitivity categories
+                # Public is the default and shouldn't be shown alongside Confidential/Highly Sensitive/Unsafe
+                if other_categories - {"Public"}:
+                    other_categories = other_categories - {"Public"}
+                # Replace secondary_tags with ONLY the other category names (no thematic tags)
+                secondary_tags = list(other_categories)
+            
             # Add image findings to citations if present
             if image_analysis_out and not image_analysis_out.get("mock"):
                 for finding in image_analysis_out.get("findings", []):
-                    if finding.get("regions_of_concern"):
+                    if finding.get("regions_of_concern") or finding.get("identifiable_elements"):
                         snippet = f"[Image {finding['image_index']}] {finding['description']}"
+                        
+                        # Add identifiable elements (serial numbers, part numbers, etc.)
+                        if finding.get("identifiable_elements"):
+                            identifiers = finding["identifiable_elements"]
+                            if identifiers:
+                                snippet += f" - Identifiable Elements: {', '.join(identifiers)}"
+                        
+                        # Add regions of concern
                         if finding.get("regions_of_concern"):
-                            snippet += f" - Regions: {', '.join(finding['regions_of_concern'])}"
+                            regions = finding["regions_of_concern"]
+                            if regions:
+                                snippet += f" - Regions: {', '.join(regions)}"
+                        
                         citations.append(Citation(page=finding["page"], snippet=snippet))
         except Exception as e:
             print(f"Error parsing final_out: {e}")

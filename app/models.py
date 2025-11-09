@@ -1,7 +1,16 @@
 from typing import List, Optional, Literal, Dict, Any
 from pydantic import BaseModel
+from datetime import datetime
+from enum import Enum
 
 Category = Literal["Public", "Confidential", "Highly Sensitive", "Unsafe"]
+
+class JobStatus(str, Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 class UploadResponse(BaseModel):
     doc_id: str
@@ -43,3 +52,28 @@ class HITLUpdate(BaseModel):
     new_label: Category
     reviewer: str
     comment: Optional[str] = None
+
+class BatchUploadResponse(BaseModel):
+    job_id: str
+    total_files: int
+    status: JobStatus
+    message: str
+
+class DocumentStatus(BaseModel):
+    doc_id: str
+    filename: str
+    status: str
+    progress: float  # 0-100
+    error: Optional[str] = None
+
+class JobStatusResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    total_files: int
+    completed: int
+    failed: int
+    progress: float  # 0-100
+    created_at: datetime
+    updated_at: datetime
+    documents: List[DocumentStatus]
+    error: Optional[str] = None
