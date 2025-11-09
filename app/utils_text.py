@@ -4,13 +4,8 @@ from typing import Dict, List, Tuple
 from PIL import Image
 import io
 import base64
-import uuid, cv2, numpy as np
-import os
+import uuid, os, cv2, fitz, numpy as np
 import pytesseract
-
-default_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", default_path)
-
 from pytesseract import Output
 
 
@@ -64,12 +59,61 @@ def extract_from_pdf(path: str) -> Tuple[Dict[int, str], int, float, List[Dict]]
 
 
 def extract_from_docx(path: str) -> Tuple[Dict[int, str], int, float, List[Dict]]:
-    """Extract text from DOCX (images not supported yet)."""
-    document = docx.Document(path)
-    text = "\n".join(p.text for p in document.paragraphs)
-    # naive: whole doc as page 1
-    legibility = 1.0 if text.strip() else 0.0
-    return {1: text}, 0, legibility, []
+   """Extract text, images, and legibility from DOCX using pytesseract for OCR."""
+   document = docx.Document(path)
+   text = "\n".join(p.text for p in document.paragraphs)
+
+
+   images_data = []
+   legibility_scores = []
+   image_count = 0
+
+
+   for rel in document.part.rels.values():
+       if "image" in rel.reltype:
+           image_bytes = rel.target_part.blob
+           image_ext = os.path.splitext(rel.target_part.partname)[1].replace(".", "")
+           image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+           images_data.append({
+               "page": 1,
+               "index": image_count,
+               "data": image_b64,
+               "ext": image_ext,
+               "size": len(image_bytes)
+           })
+           image_count += 1
+
+
+           # Decode and analyze image legibility
+           np_arr = np.frombuffer(image_bytes, np.uint8)
+           img_rgb = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+           if img_rgb is not None:
+               ocr_data = pytesseract.image_to_data(img_rgb, output_type=Output.DICT)
+               confs = []
+               for c in ocr_data['conf']:
+                   try:
+                       val = int(c)
+                       if val > 0:
+                           confs.append(val)
+                   except (ValueError, TypeError):
+                       continue
+               ocr_conf = sum(confs)/len(confs) if confs else 0.0
+               sharp = float(cv2.Laplacian(cv2.cvtColor(img_rgb, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
+               sharp_norm = min(sharp / 1000, 1.0)
+               ocr_norm = ocr_conf / 100.0
+               legibility_scores.append(0.5 * sharp_norm + 0.5 * ocr_norm)
+
+
+   legibility_report = (
+       round(sum(legibility_scores) / len(legibility_scores), 3)
+       if legibility_scores else
+       (1.0 if len(text.strip()) > 50 else 0.0)
+   )
+
+
+   return {1: text}, image_count, legibility_report, images_data
+
+
 
 
 def pdf_to_images(pdf_path: str, dpi: int = 150):
