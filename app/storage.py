@@ -23,11 +23,12 @@ def save_document(file_bytes: bytes, filename: str) -> str:
     }
     return doc_id
 
-def save_extracted(doc_id: str, pages: Dict[int, str], images_count: int, images_data: list = None):
+def save_extracted(doc_id: str, pages: Dict[int, str], images_count: int, images_data: list = None, legibility_result: float = 0.0):
     meta = DOCS_META[doc_id]
     meta.update({
         "page_count": len(pages),
         "image_count": images_count,
+        "legibility_result": legibility_result,
         "status": "preprocessed"
     })
     DOCS_TEXT[doc_id] = pages

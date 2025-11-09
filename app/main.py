@@ -27,16 +27,17 @@ async def upload_document(file: UploadFile = File(...)):
     doc_id = save_document(content, file.filename)
     meta = get_meta(doc_id)
 
-    pages, image_count, images_data = extract_generic(meta["path"])
+    pages, image_count, legibility_result, images_data = extract_generic(meta["path"])
     if not pages:
         raise HTTPException(status_code=400, detail="Unable to extract content.")
-    save_extracted(doc_id, pages, image_count, images_data)
+    save_extracted(doc_id, pages, image_count, images_data, legibility_result)
 
     return UploadResponse(
         doc_id=doc_id,
         filename=file.filename,
         page_count=len(pages),
         image_count=image_count,
+        legibility_result=legibility_result,
         status="preprocessed",
     )
 
@@ -48,10 +49,11 @@ async def classify(doc_id: str, pretty: bool = False):
     
     meta = get_meta(doc_id)
     image_count = meta.get("image_count", 0)
+    legibility_score = meta.get("legibility_result")
     images_data = get_document_images(doc_id)
 
     signals = run_detectors(pages)
-    result = classify_document(doc_id, pages, signals, image_count, images_data)
+    result = classify_document(doc_id, pages, signals, image_count, images_data, legibility_score)
     save_classification(doc_id, result)
 
     if pretty:

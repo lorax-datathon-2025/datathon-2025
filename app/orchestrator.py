@@ -43,7 +43,8 @@ def classify_document(doc_id: str,
                       pages: Dict[int, str],
                       signals: DetectorSignals,
                       image_count: int = 0,
-                      images_data: List[Dict] = None) -> ClassificationResult:
+                      images_data: List[Dict] = None,
+                      legibility_score: Optional[float] = None) -> ClassificationResult:
     if images_data is None:
         images_data = []
 
@@ -233,6 +234,7 @@ def classify_document(doc_id: str,
         agreement_score,
         disagreements,
         content_safety,
+        legibility_score,
     )
 
     llm_payload = {
@@ -274,6 +276,7 @@ def classify_document(doc_id: str,
         primary_analysis=primary_analysis_view,
         secondary_analysis=secondary_analysis_view,
         summary=summary,
+        legibility_score=legibility_score,
     )
 
 
@@ -371,8 +374,9 @@ def _build_summary_block(
     agreement_score: float,
     disagreements: List[str],
     content_safety: str,
+    legibility_score: Optional[float],
 ) -> Dict[str, Any]:
-    return {
+    summary = {
         "decision": {
             "category": final_category,
             "confidence": final_confidence,
@@ -382,6 +386,9 @@ def _build_summary_block(
         "agreement": {"score": agreement_score, "disagreements": disagreements},
         "content_safety": content_safety,
     }
+    if legibility_score is not None:
+        summary["legibility"] = {"average_score": legibility_score}
+    return summary
 
 
 def _format_pages_for_secondary(pages: Dict[int, str], max_chars: int = 8000) -> str:

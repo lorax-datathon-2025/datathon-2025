@@ -8,6 +8,7 @@ class UploadResponse(BaseModel):
     filename: str
     page_count: int
     image_count: int
+    legibility_result: float
     status: str = "ingested"
 
 class Citation(BaseModel):
@@ -43,6 +44,7 @@ class ClassificationResult(BaseModel):
     primary_analysis: Optional[Dict[str, Any]] = None
     secondary_analysis: Optional[Dict[str, Any]] = None
     summary: Optional[Dict[str, Any]] = None
+    legibility_score: Optional[float] = None
 
 class HITLUpdate(BaseModel):
     doc_id: str
