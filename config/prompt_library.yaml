@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 policies:
   categories:
@@ -104,3 +104,44 @@ prompts:
         "citations": [ { "page": int, "snippet": str } ],
         "explanation": str
       }
+
+prompt_flow:
+  - id: image_analysis
+    prompt: image_analysis
+    runner: multimodal
+    conditions:
+      has_images: true
+    stop_on_error: false
+
+  - id: precheck
+    prompt: precheck
+    collect_summary: true
+
+  - id: pii_scan
+    prompt: pii_scan
+    depends_on:
+      - precheck
+    use_summary_pages: true
+    conditions:
+      signals_true:
+        - has_pii
+
+  - id: unsafe_scan
+    prompt: unsafe_scan
+    depends_on:
+      - precheck
+    use_summary_pages: true
+
+  - id: confidentiality_scan
+    prompt: confidentiality_scan
+    depends_on:
+      - precheck
+      - unsafe_scan
+    use_summary_pages: true
+
+  - id: final_decision
+    prompt: final_decision
+    depends_on:
+      - confidentiality_scan
+    use_summary_pages: true
+    final_node: true

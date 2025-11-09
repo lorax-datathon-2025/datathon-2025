@@ -1,10 +1,13 @@
 import json
-from typing import Dict, Any, List
-from .models import ClassificationResult, DetectorSignals, Citation
-from .prompt_lib import get_prompt
-from .llm_client import call_llm, call_llm_with_images
+import os
+import re
+from typing import Any, Dict, List, Optional
+
 import google.generativeai as genai
-import os, json, re
+
+from .llm_client import SAFETY_SETTINGS, call_llm, call_llm_with_images
+from .models import ClassificationResult, Citation, DetectorSignals
+from .prompt_lib import get_prompt, get_prompt_flow
 
 TRUNCATE_CHARS = 1200
 
@@ -14,14 +17,6 @@ def get_gemini_reasoning(doc_text: str):
         # API is already configured in llm_client
         model_name = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash-exp")
         model = genai.GenerativeModel(model_name)
-
-        # Safety settings to allow analysis of potentially unsafe content
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUAL", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
 
         prompt = f"""
         You are an AI document analyst for a compliance and safety classification system.
@@ -54,7 +49,7 @@ def get_gemini_reasoning(doc_text: str):
         {doc_text[:5000]}
         """
 
-        response = model.generate_content(prompt, safety_settings=safety_settings)
+        response = model.generate_content(prompt, safety_settings=SAFETY_SETTINGS)
         
         # Check if response was blocked by safety filters
         if not response.candidates:
@@ -119,108 +114,86 @@ def classify_document(doc_id: str,
                       images_data: List[Dict] = None) -> ClassificationResult:
     if images_data is None:
         images_data = []
-    prompt_errors = []
+
+    prompt_errors: List[str] = []
     summary_pages: Dict[int, str] = {}
-    image_analysis_out = None
+    flow_outputs: Dict[str, Any] = {}
+    flow = get_prompt_flow()
+    final_node_id: Optional[str] = None
 
-    def _has_error(output: Any, node: str):
-        if isinstance(output, dict) and output.get("mock"):
-            prompt_errors.append(node)
-    
-    def _dedupe_citations(citations: List[Citation]) -> List[Citation]:
-        """Remove duplicate citations based on page and snippet similarity."""
-        seen = set()
-        unique = []
-        for cite in citations:
-            # Create a normalized key (page + first 100 chars of snippet)
-            key = (cite.page, cite.snippet[:100].strip())
-            if key not in seen:
-                seen.add(key)
-                unique.append(cite)
-        return unique
+    for node in flow:
+        node_id = node["id"]
 
-    # Node 0: Image analysis (if images present)
-    if images_data and len(images_data) > 0:
+        if not _should_run_node(node, signals, images_data):
+            continue
+        if not _dependencies_ready(node, flow_outputs):
+            continue
+
         try:
-            prompt_cfg = get_prompt("image_analysis")
-            prompt_text = prompt_cfg["content"]
-            image_analysis_out = call_llm_with_images(prompt_text, images_data)
+            if node.get("runner") == "multimodal":
+                if not images_data:
+                    continue
+                prompt_cfg = get_prompt(node["prompt"])
+                output = call_llm_with_images(prompt_cfg["content"], images_data)
+            else:
+                extra_payload = {
+                    "detectors": signals.dict(),
+                    "prior_results": flow_outputs,
+                    "node_id": node_id,
+                }
+                extra_payload.update(node.get("extra", {}))
+                override_pages = summary_pages if node.get("use_summary_pages") and summary_pages else None
+                output = _run_prompt(
+                    node["prompt"],
+                    pages,
+                    extra=extra_payload,
+                    override_pages=override_pages,
+                )
         except Exception as exc:
-            print(f"Image analysis error: {exc}")
-            image_analysis_out = {"mock": True, "error": str(exc), "prompt_node": "image_analysis"}
-            _has_error(image_analysis_out, "image_analysis")
+            print(f"Prompt node '{node_id}' error: {exc}")
+            output = {"mock": True, "error": str(exc), "prompt_node": node_id}
 
-    # Node 1: precheck
-    precheck_out = _run_prompt("precheck", pages)
-    _has_error(precheck_out, "precheck")
-    if isinstance(precheck_out, list):
-        for entry in precheck_out:
-            if isinstance(entry, dict):
-                page = entry.get("page")
-                summary = entry.get("summary")
-                if page and summary:
-                    summary_pages[page] = summary
+        flow_outputs[node_id] = output
 
-    # Node 2: PII-specific (only if needed)
-    pii_out = None
-    if signals.has_pii:
-        pii_out = _run_prompt(
-            "pii_scan",
-            pages,
-            extra={"detectors": signals.dict()},
-            override_pages=summary_pages or None,
-        )
-        _has_error(pii_out, "pii_scan")
+        if _output_has_error(output):
+            prompt_errors.append(node_id)
+            if node.get("stop_on_error", True):
+                final_node_id = final_node_id or node_id
+                break
 
-    # Node 3: unsafe scan (always if any pattern OR as safety net)
-    unsafe_out = _run_prompt(
-        "unsafe_scan",
-        pages,
-        extra={"detectors": signals.dict()},
-        override_pages=summary_pages or None,
-    )
-    _has_error(unsafe_out, "unsafe_scan")
+        if node.get("collect_summary"):
+            _update_summary_pages(output, summary_pages)
 
-    # Node 4: confidentiality scan
-    conf_out = _run_prompt(
-        "confidentiality_scan",
-        pages,
-        extra={
-            "detectors": signals.dict(),
-            "precheck": precheck_out,
-            "pii_scan": pii_out,
-            "unsafe_scan": unsafe_out,
-        },
-        override_pages=summary_pages or None,
-    )
-    _has_error(conf_out, "confidentiality_scan")
+        if _stop_conditions_met(node, output):
+            final_node_id = final_node_id or node_id
+            break
 
-    # Node 5: final decision: combine everything.
-    final_out = _run_prompt(
-        "final_decision",
-        pages,
-        extra={
-            "detectors": signals.dict(),
-            "precheck": precheck_out,
-            "pii_scan": pii_out,
-            "unsafe_scan": unsafe_out,
-            "confidentiality_scan": conf_out,
-            "image_analysis": image_analysis_out,
-        },
-        override_pages=summary_pages or None,
-    )
-    _has_error(final_out, "final_decision")
+        if node.get("final_node"):
+            final_node_id = node_id
+            break
 
-    # Parse final_out (assuming LLM returns proper JSON per instructions).
-    # Here we handle both real JSON or stubbed mock.
-    if isinstance(final_out, dict) and final_out.get("mock"):
-        # Fallback heuristic if using stub:
-        final_category, secondary_tags, confidence, citations, explanation = (
-            _fallback_decision(signals)
-        )
+    if final_node_id is None:
+        for node in reversed(flow):
+            node_id = node.get("id")
+            if node_id and node_id in flow_outputs:
+                final_node_id = node_id
+                break
+
+    final_out = flow_outputs.get(final_node_id) if final_node_id else None
+    image_analysis_out = flow_outputs.get("image_analysis")
+
+    if not final_out or _output_has_error(final_out):
+        final_category, secondary_tags, confidence, citations, explanation = _fallback_decision(signals)
+        prompt_tree_result = {
+            "final_category": final_category,
+            "secondary_tags": secondary_tags,
+            "confidence": confidence,
+            "citations": [c.dict() for c in citations],
+            "explanation": explanation,
+            "source": "fallback",
+        }
     else:
         try:
-            # if model returns as JSON string in "content" you'd parse here
             data = final_out if isinstance(final_out, dict) else json.loads(final_out)
             final_category = data["final_category"]
             secondary_tags = data.get("secondary_tags", [])
@@ -229,42 +202,39 @@ def classify_document(doc_id: str,
                 Citation(page=c["page"], snippet=c["snippet"])
                 for c in data.get("citations", [])
             ]
-            # Deduplicate citations to remove duplicates from node aggregation
             citations = _dedupe_citations(citations)
             explanation = data.get("explanation", "")
-            
-            # Add image findings to citations if present
-            if image_analysis_out and not image_analysis_out.get("mock"):
+
+            if image_analysis_out and not _output_has_error(image_analysis_out):
                 for finding in image_analysis_out.get("findings", []):
                     if finding.get("regions_of_concern"):
                         snippet = f"[Image {finding['image_index']}] {finding['description']}"
                         if finding.get("regions_of_concern"):
                             snippet += f" - Regions: {', '.join(finding['regions_of_concern'])}"
-                        citations.append(Citation(page=finding["page"], snippet=snippet))
-        except Exception as e:
-            print(f"Error parsing final_out: {e}")
-            final_category, secondary_tags, confidence, citations, explanation = (
-                _fallback_decision(signals)
-            )
+                        citations.append(
+                            Citation(page=finding.get("page", 0), snippet=snippet)
+                        )
+            citations = _dedupe_citations(citations)
 
-    """ if signals.has_unsafe_pattern:
-        requires_review = True
-    elif final_category in ["Unsafe","Highly Sensitive"]:
-        requires_review = True
-    elif confidence < 0.7:
-        requires_review = True
-    else:
-        requires_review = False """
-    
-    # Store prompt tree results (LLM #1)
-    prompt_tree_result = {
-        "final_category": final_category,
-        "secondary_tags": secondary_tags,
-        "confidence": confidence,
-        "citations": citations,
-        "explanation": explanation,
-        "source": "prompt_tree"
-    }
+            prompt_tree_result = {
+                "final_category": final_category,
+                "secondary_tags": secondary_tags,
+                "confidence": confidence,
+                "citations": [c.dict() for c in citations],
+                "explanation": explanation,
+                "source": "prompt_tree",
+            }
+        except Exception as exc:
+            print(f"Error parsing final_out: {exc}")
+            final_category, secondary_tags, confidence, citations, explanation = _fallback_decision(signals)
+            prompt_tree_result = {
+                "final_category": final_category,
+                "secondary_tags": secondary_tags,
+                "confidence": confidence,
+                "citations": [c.dict() for c in citations],
+                "explanation": explanation,
+                "source": "fallback",
+            }
 
     # Run second LLM opinion (LLM #2: get_gemini_reasoning)
     document_text = "\n".join(pages.values())
@@ -307,6 +277,7 @@ def classify_document(doc_id: str,
     llm_payload = {
         "prompt_errors": prompt_errors if prompt_errors else [],
         "prompt_tree": prompt_tree_result,
+        "prompt_flow": flow_outputs,
         "gemini": gemini_result,
         "dual_llm_validation": {
             "agreement_score": agreement_score,
@@ -332,6 +303,89 @@ def classify_document(doc_id: str,
         dual_llm_disagreements=disagreements if disagreements else None
     )
 
+
+def _should_run_node(node_cfg: Dict[str, Any], signals: DetectorSignals, images_data: List[Dict]) -> bool:
+    conditions = node_cfg.get("conditions") or {}
+    if conditions.get("has_images") and not images_data:
+        return False
+
+    for attr in conditions.get("signals_true", []):
+        if not getattr(signals, attr, False):
+            return False
+
+    for attr in conditions.get("signals_false", []):
+        if getattr(signals, attr, False):
+            return False
+
+    return True
+
+
+def _dependencies_ready(node_cfg: Dict[str, Any], outputs: Dict[str, Any]) -> bool:
+    deps = node_cfg.get("depends_on") or []
+    return all(dep in outputs for dep in deps)
+
+
+def _output_has_error(output: Any) -> bool:
+    return isinstance(output, dict) and output.get("mock")
+
+
+def _update_summary_pages(output: Any, summary_pages: Dict[int, str]) -> None:
+    if isinstance(output, list):
+        for entry in output:
+            if not isinstance(entry, dict):
+                continue
+            page = entry.get("page")
+            summary = entry.get("summary")
+            if page and summary:
+                summary_pages[page] = summary
+
+
+def _stop_conditions_met(node_cfg: Dict[str, Any], output: Any) -> bool:
+    conditions = node_cfg.get("stop_if") or []
+    if not conditions:
+        return False
+    for cond in conditions:
+        field = cond.get("path") or cond.get("field")
+        if not field:
+            continue
+        value = _extract_path_value(output, field)
+        if "equals" in cond:
+            if value == cond["equals"]:
+                return True
+        elif value:
+            return True
+    return False
+
+
+def _extract_path_value(payload: Any, path: str) -> Any:
+    if payload is None:
+        return None
+    current = payload
+    for part in path.split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list):
+            try:
+                index = int(part)
+            except ValueError:
+                return None
+            if index < 0 or index >= len(current):
+                return None
+            current = current[index]
+        else:
+            return None
+    return current
+
+
+def _dedupe_citations(citations: List[Citation]) -> List[Citation]:
+    seen = set()
+    unique: List[Citation] = []
+    for cite in citations:
+        key = (cite.page, cite.snippet[:100].strip())
+        if key not in seen:
+            seen.add(key)
+            unique.append(cite)
+    return unique
 
 
 def _compute_llm_agreement(prompt_tree_result: Dict[str, Any], gemini_result: Dict[str, Any]) -> tuple:
