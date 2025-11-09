@@ -208,3 +208,4 @@ __marimo__/
 
 # Ignore the data .pdf files
 data/*.pdf
+data/*.docx

@@ -1,6 +1,7 @@
 import os
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, List
+from datetime import datetime
 
 from . import db
 
@@ -11,6 +12,7 @@ DOCS_META: Dict[str, Any] = {}
 DOCS_TEXT: Dict[str, Any] = {}
 DOCS_IMAGES: Dict[str, Any] = {}
 DOCS_AUDIT: Dict[str, Any] = {}
+JOBS: Dict[str, Any] = {}
 
 def save_document(file_bytes: bytes, filename: str) -> str:
     doc_id = str(uuid.uuid4())
@@ -85,3 +87,60 @@ def save_hitl_update(doc_id: str, update: dict):
         "event": "hitl_override",
         "data": update
     })
+
+
+# Job management functions
+def create_job(doc_ids: List[str]) -> str:
+    """Create a new batch processing job."""
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "pending",
+        "total_files": len(doc_ids),
+        "completed": 0,
+        "failed": 0,
+        "doc_ids": doc_ids,
+        "documents": {doc_id: {"status": "pending", "progress": 0.0} for doc_id in doc_ids},
+        "created_at": datetime.now(),
+        "updated_at": datetime.now(),
+        "error": None
+    }
+    return job_id
+
+
+def get_job(job_id: str) -> dict:
+    """Get job status and details."""
+    return JOBS.get(job_id, {})
+
+
+def update_job_status(job_id: str, status: str):
+    """Update overall job status."""
+    if job_id in JOBS:
+        JOBS[job_id]["status"] = status
+        JOBS[job_id]["updated_at"] = datetime.now()
+
+
+def update_document_in_job(job_id: str, doc_id: str, status: str, progress: float = 0.0, error: str = None):
+    """Update individual document status within a job."""
+    if job_id in JOBS and doc_id in JOBS[job_id]["documents"]:
+        JOBS[job_id]["documents"][doc_id] = {
+            "status": status,
+            "progress": progress,
+            "error": error
+        }
+        JOBS[job_id]["updated_at"] = datetime.now()
+       
+        # Update counters
+        if status == "completed":
+            JOBS[job_id]["completed"] = sum(
+                1 for d in JOBS[job_id]["documents"].values() if d["status"] == "completed"
+            )
+        elif status == "failed":
+            JOBS[job_id]["failed"] = sum(
+                1 for d in JOBS[job_id]["documents"].values() if d["status"] == "failed"
+            )
+
+
+def get_all_jobs() -> List[dict]:
+    """Get all jobs sorted by creation date."""
+    return sorted(JOBS.values(), key=lambda x: x["created_at"], reverse=True)
