@@ -1,81 +1,13 @@
 import json
 import os
-import re
 from typing import Any, Dict, List, Optional
 
-import google.generativeai as genai
-
-from .llm_client import SAFETY_SETTINGS, call_llm, call_llm_with_images
+from .llm_client import call_llm, call_llm_with_images
 from .models import ClassificationResult, Citation, DetectorSignals
 from .prompt_lib import get_prompt, get_prompt_flow
+from .secondary_llm import run_secondary_reasoning
 
 TRUNCATE_CHARS = 1200
-
-def get_gemini_reasoning(doc_text: str):
-    """Call Gemini to generate structured reasoning about the document."""
-    try:
-        # API is already configured in llm_client
-        model_name = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash-exp")
-        model = genai.GenerativeModel(model_name)
-
-        prompt = f"""
-        You are an AI document analyst for a compliance and safety classification system.
-        
-        IMPORTANT: You are ANALYZING content for safety violations, not creating harmful content.
-        Your job is to DETECT and CLASSIFY potentially unsafe material so it can be flagged for review.
-        
-        Review the text below and respond ONLY in valid JSON with this structure. 
-            -Critical information is any sensitive data.
-            -Sensitivity
-                1.	Sensitive/Highly Sensitive: Content that includes PII like SSNs, account/credit card numbers, and proprietary schematics (e.g., defense or next‑gen product designs of military equipment).  
-                2.	Confidential: Internal communications and business documents, customer details (names, addresses), and non-public operational content.
-                3.	Public: Marketing materials, product brochures, public website content, generic images.
-            -Reasoning: Tell us why you pick the sentivity by giving us like "Cite pages containing only public marketing statements; confirm no PII or confidential details." or "Cite the field(s) containing SSN or other PII; show redaction suggestions if supported."
-            -Confidence: give us a rating 0-1 of how confident you are about the rating of the sensitivity.
-            - Content Safety: Evaluated for Child Safety and should not include Hate speech, exploitative, violent, criminal, political news or cyber-threat content.
-                - If safe say "Content is safe for kids"
-                - If unsafe, DESCRIBE the safety violations found (e.g., "Contains violent imagery", "Contains hate speech targeting [group]", "Contains explicit content")
-:
-        {{
-        "Critical_info": [string],
-        "Sensitivity": "Public" | "Confidential" | "Highly Sensitive",
-        "Reasoning": string,
-        "Confidence": decimal,
-        "Content_safety": string
-        }}
-
-
-        Text:
-        {doc_text[:5000]}
-        """
-
-        response = model.generate_content(prompt, safety_settings=SAFETY_SETTINGS)
-        
-        # Check if response was blocked by safety filters
-        if not response.candidates:
-            return {"error": "Gemini blocked by safety filters (no candidates returned)"}
-        
-        candidate = response.candidates[0]
-        finish_reason = getattr(candidate, "finish_reason", None)
-        
-        # Check if blocked by safety
-        if finish_reason not in (None, 1, "STOP"):
-            safety_ratings = getattr(candidate, "safety_ratings", [])
-            return {
-                "error": f"Gemini blocked output (finish_reason={finish_reason})",
-                "safety_ratings": str(safety_ratings)
-            }
-        
-        raw = response.text.strip()
-
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", raw, re.DOTALL)
-            return json.loads(match.group(0)) if match else {"error": "Could not parse Gemini JSON", "raw": raw}
-    except Exception as e:
-        return {"error": str(e), "error_type": type(e).__name__}
-    
 
 def _prepare_pages(pages: Dict[int, str]) -> Dict[int, str]:
     prepared = {}
@@ -183,8 +115,6 @@ def classify_document(doc_id: str,
                 break
 
     final_out = flow_outputs.get(final_node_id) if final_node_id else None
-    image_analysis_out = flow_outputs.get("image_analysis")
-
     citations: List[Citation] = []
 
     if not final_out or _output_has_error(final_out):
@@ -249,54 +179,81 @@ def classify_document(doc_id: str,
                 "source": "fallback",
             }
 
-    # Run second LLM opinion (LLM #2: get_gemini_reasoning)
-    document_text = "\n".join(pages.values())
-    try:
-        gemini_result = get_gemini_reasoning(document_text)
-    except Exception as e:
-        print(f"Error in get_gemini_reasoning: {e}")
-        gemini_result = {"error": str(e)}
-
-
-    # Compare both LLM outputs and calculate agreement
-    agreement_score, disagreements = _compute_llm_agreement(prompt_tree_result, gemini_result)
-    
-    # Decision: Use the more restrictive classification if there's disagreement
-    final_category_to_use = _resolve_category_conflict(
-        prompt_tree_result["final_category"],
-        gemini_result.get("Sensitivity") if "error" not in gemini_result else None
+    primary_analysis = _build_primary_analysis(
+        prompt_tree_result, os.getenv("GEMINI_MODEL", "models/gemini-1.5-pro-latest")
     )
-    
-    # Use data from the LLM that made the final decision
-    if final_category_to_use == gemini_result.get("Sensitivity") and "error" not in gemini_result:
-        final_confidence = gemini_result.get("Confidence", confidence)
-        final_explanation = gemini_result.get("Reasoning", explanation)
-        final_tags = gemini_result.get("Critical_info", secondary_tags) if isinstance(gemini_result.get("Critical_info"), list) else secondary_tags
+
+    document_text = _format_pages_for_secondary(pages)
+    try:
+        secondary_raw = run_secondary_reasoning(document_text)
+    except Exception as exc:
+        print(f"Secondary LLM error: {exc}")
+        secondary_raw = {"error": str(exc)}
+    secondary_analysis = _structure_secondary_analysis(secondary_raw)
+
+    agreement_score, disagreements = _compute_llm_agreement(primary_analysis, secondary_analysis)
+
+    secondary_label = (
+        secondary_analysis.get("label")
+        if not secondary_analysis.get("error")
+        else None
+    )
+    final_category_to_use = _resolve_category_conflict(
+        primary_analysis.get("category"),
+        secondary_label,
+    )
+
+    if final_category_to_use == secondary_label and not secondary_analysis.get("error"):
+        final_confidence = secondary_analysis.get("confidence", confidence)
+        final_explanation = secondary_analysis.get("explanation", explanation)
+        final_tags = secondary_analysis.get("critical_info") or secondary_tags
     else:
         final_confidence = confidence
         final_explanation = explanation
         final_tags = secondary_tags
 
-    # Determine if review is required
-    requires_review = (
-        final_confidence < 0.8
-        or signals.has_unsafe_pattern
-        or bool(prompt_errors)
-        or agreement_score < 0.7  # Flag if LLMs disagree significantly
-        or len(disagreements) > 0
+    content_safety = secondary_analysis.get("content_safety") or "Content is safe for kids"
+
+    review_triggers = _collect_review_triggers(
+        final_confidence,
+        signals,
+        prompt_errors,
+        agreement_score,
+        disagreements,
+        secondary_analysis,
+    )
+    requires_review = bool(review_triggers)
+
+    summary = _build_summary_block(
+        final_category_to_use,
+        final_confidence,
+        final_tags,
+        requires_review,
+        review_triggers,
+        agreement_score,
+        disagreements,
+        content_safety,
     )
 
-    # Build llm_payload with both LLM outputs
     llm_payload = {
         "prompt_errors": prompt_errors if prompt_errors else [],
-        "prompt_tree": prompt_tree_result,
         "prompt_flow": flow_outputs,
-        "gemini": gemini_result,
+        "primary_raw": prompt_tree_result,
+        "secondary_llm": secondary_analysis.get("raw"),
         "dual_llm_validation": {
             "agreement_score": agreement_score,
             "disagreements": disagreements,
-            "resolution_strategy": "most_restrictive"
-        }
+            "resolution_strategy": "most_restrictive",
+            "secondary_model": secondary_analysis.get("model"),
+        },
+    }
+
+    primary_analysis_view = {k: v for k, v in primary_analysis.items() if v is not None}
+    secondary_analysis_view = {
+        k: v
+        for k, v in secondary_analysis.items()
+        if k in {"model", "label", "confidence", "explanation", "content_safety", "critical_info", "needs_review", "citations"}
+        and v is not None
     }
 
     return ClassificationResult(
@@ -307,14 +264,145 @@ def classify_document(doc_id: str,
         explanation=final_explanation,
         page_count=len(pages),
         image_count=image_count,
-        content_safety=gemini_result.get("Content_safety", "Content is safe for kids") if "error" not in gemini_result else "Content is safe for kids",
+        content_safety=content_safety,
         citations=citations,
         raw_signals=signals,
         llm_payload=llm_payload,
         requires_review=requires_review,
         dual_llm_agreement=agreement_score,
-        dual_llm_disagreements=disagreements if disagreements else None
+        dual_llm_disagreements=disagreements if disagreements else None,
+        primary_analysis=primary_analysis_view,
+        secondary_analysis=secondary_analysis_view,
+        summary=summary,
     )
+
+
+def _build_primary_analysis(tree_result: Dict[str, Any], model_name: str) -> Dict[str, Any]:
+    return {
+        "engine": tree_result.get("source", "prompt_tree"),
+        "model": model_name,
+        "category": tree_result.get("final_category"),
+        "secondary_tags": tree_result.get("secondary_tags", []),
+        "confidence": tree_result.get("confidence"),
+        "explanation": tree_result.get("explanation", ""),
+        "citations": tree_result.get("citations", []),
+    }
+
+
+def _structure_secondary_analysis(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    base_raw: Dict[str, Any] = raw or {}
+    if not isinstance(base_raw, dict):
+        base_raw = {"raw_value": base_raw}
+
+    analysis: Dict[str, Any] = {
+        "raw": base_raw,
+        "model": base_raw.get("model") or os.getenv("SECONDARY_LLM_MODEL", "gpt-4o-mini"),
+    }
+    if not base_raw or base_raw.get("error"):
+        analysis.update(
+            {
+                "label": None,
+                "confidence": 0.0,
+                "explanation": base_raw.get("error") or "Secondary LLM unavailable",
+                "content_safety": None,
+                "critical_info": [],
+                "needs_review": True,
+                "citations": [],
+                "error": base_raw.get("error") or "secondary_llm_error",
+            }
+        )
+        return analysis
+
+    label = base_raw.get("label") or base_raw.get("Sensitivity")
+    confidence = float(base_raw.get("confidence", base_raw.get("Confidence", 0.7)))
+    explanation = base_raw.get("rationale") or base_raw.get("Reasoning") or ""
+    content_safety = base_raw.get("content_safety") or base_raw.get("Content_safety")
+    critical_info = base_raw.get("critical_info") or base_raw.get("Critical_info") or []
+    if not isinstance(critical_info, list):
+        critical_info = [str(critical_info)]
+    citations = base_raw.get("citations") or base_raw.get("Citations") or []
+    if not isinstance(citations, list):
+        citations = []
+    needs_review = bool(base_raw.get("needs_review") or base_raw.get("Requires_review") or (confidence < 0.8))
+
+    analysis.update(
+        {
+            "label": label,
+            "confidence": confidence,
+            "explanation": explanation,
+            "content_safety": content_safety,
+            "critical_info": critical_info,
+            "needs_review": needs_review,
+            "citations": citations,
+            "error": None,
+        }
+    )
+    return analysis
+
+
+def _collect_review_triggers(
+    final_confidence: float,
+    signals: DetectorSignals,
+    prompt_errors: List[str],
+    agreement_score: float,
+    disagreements: List[str],
+    secondary_analysis: Dict[str, Any],
+) -> List[str]:
+    triggers: List[str] = []
+    if final_confidence < 0.8:
+        triggers.append("low_confidence")
+    if signals.has_unsafe_pattern:
+        triggers.append("unsafe_detector")
+    if prompt_errors:
+        triggers.append("prompt_errors")
+    if agreement_score < 0.7 or disagreements:
+        triggers.append("llm_disagreement")
+    if secondary_analysis.get("needs_review"):
+        triggers.append("secondary_llm_flag")
+    return triggers
+
+
+def _build_summary_block(
+    final_category: Optional[str],
+    final_confidence: float,
+    secondary_tags: List[str],
+    requires_review: bool,
+    review_triggers: List[str],
+    agreement_score: float,
+    disagreements: List[str],
+    content_safety: str,
+) -> Dict[str, Any]:
+    return {
+        "decision": {
+            "category": final_category,
+            "confidence": final_confidence,
+            "secondary_tags": secondary_tags,
+        },
+        "review": {"required": requires_review, "triggers": review_triggers},
+        "agreement": {"score": agreement_score, "disagreements": disagreements},
+        "content_safety": content_safety,
+    }
+
+
+def _format_pages_for_secondary(pages: Dict[int, str], max_chars: int = 8000) -> str:
+    chunks: List[str] = []
+    used = 0
+    for page_num, text in sorted(pages.items()):
+        header = f"=== Page {page_num} ===\n"
+        body = (text or "").strip()
+        if len(body) > TRUNCATE_CHARS:
+            body = body[:TRUNCATE_CHARS].rsplit(" ", 1)[0] + " …"
+        entry = header + body + "\n"
+        if used + len(entry) > max_chars:
+            remaining = max_chars - used
+            if remaining > 0:
+                chunks.append(entry[:remaining])
+            break
+        chunks.append(entry)
+        used += len(entry)
+        if used >= max_chars:
+            break
+    return "\n".join(chunks)
 
 
 def _should_run_node(node_cfg: Dict[str, Any], signals: DetectorSignals, images_data: List[Dict]) -> bool:
@@ -483,42 +571,40 @@ def _dedupe_citations(citations: List[Citation]) -> List[Citation]:
     return unique
 
 
-def _compute_llm_agreement(prompt_tree_result: Dict[str, Any], gemini_result: Dict[str, Any]) -> tuple:
+def _compute_llm_agreement(primary_analysis: Dict[str, Any], secondary_analysis: Dict[str, Any]) -> tuple:
     """Compare two LLM outputs and return (agreement_score, list_of_disagreements)."""
-    if "error" in gemini_result:
-        return 0.0, ["gemini_error"]
-    
-    disagreements = []
-    score_components = []
-    
-    # Compare categories
-    pt_cat = prompt_tree_result.get("final_category", "")
-    gem_cat = gemini_result.get("Sensitivity", "")
-    if pt_cat == gem_cat:
+    if secondary_analysis.get("error"):
+        return 0.0, ["secondary_llm_error"]
+
+    disagreements: List[str] = []
+    score_components: List[float] = []
+
+    pt_cat = primary_analysis.get("category", "")
+    sec_cat = secondary_analysis.get("label", "")
+    if pt_cat and sec_cat and pt_cat == sec_cat:
         score_components.append(1.0)
     else:
         score_components.append(0.0)
-        disagreements.append(f"category: prompt_tree={pt_cat}, gemini={gem_cat}")
-    
-    # Compare confidence (within 0.2 is considered agreement)
-    pt_conf = prompt_tree_result.get("confidence", 0.7)
-    gem_conf = gemini_result.get("Confidence", 0.7)
-    if abs(pt_conf - gem_conf) < 0.2:
+        disagreements.append(f"category: primary={pt_cat}, secondary={sec_cat}")
+
+    pt_conf = float(primary_analysis.get("confidence", 0.7) or 0.7)
+    sec_conf = float(secondary_analysis.get("confidence", 0.7) or 0.7)
+    if abs(pt_conf - sec_conf) < 0.2:
         score_components.append(1.0)
     else:
         score_components.append(0.5)
-        disagreements.append(f"confidence_gap: {abs(pt_conf - gem_conf):.2f}")
-    
-    # Overall agreement score
+        disagreements.append(f"confidence_gap: {abs(pt_conf - sec_conf):.2f}")
+
     agreement_score = sum(score_components) / len(score_components)
-    
     return agreement_score, disagreements
 
 
-def _resolve_category_conflict(cat1: str, cat2: str = None) -> str:
+def _resolve_category_conflict(cat1: Optional[str], cat2: Optional[str] = None) -> Optional[str]:
     """Resolve conflicting categories by choosing the more restrictive one.
     Priority: Unsafe > Highly Sensitive > Confidential > Public
     """
+    if not cat1:
+        return cat2
     if not cat2:
         return cat1
     

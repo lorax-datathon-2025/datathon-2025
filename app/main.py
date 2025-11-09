@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 import os
+import json
 
 from .models import UploadResponse, ClassificationResult, HITLUpdate
 from .storage import save_document, save_extracted, get_document_pages, get_document_images, get_meta, save_classification
@@ -40,7 +41,7 @@ async def upload_document(file: UploadFile = File(...)):
     )
 
 @app.post("/classify/{doc_id}")
-async def classify(doc_id: str):
+async def classify(doc_id: str, pretty: bool = False):
     pages = get_document_pages(doc_id)
     if not pages:
         raise HTTPException(status_code=404, detail="Document not found or not processed.")
@@ -52,6 +53,11 @@ async def classify(doc_id: str):
     signals = run_detectors(pages)
     result = classify_document(doc_id, pages, signals, image_count, images_data)
     save_classification(doc_id, result)
+
+    if pretty:
+        serialized = json.dumps(result.dict(), indent=2, ensure_ascii=False)
+        return Response(content=serialized + "\n", media_type="application/json")
+
     return result
 
 @app.get("/documents/{doc_id}")

@@ -9,3 +9,4 @@ regex
 pyyaml
 python-dotenv
 google-generativeai
+openai

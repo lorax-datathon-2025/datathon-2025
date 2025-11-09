@@ -40,6 +40,9 @@ class ClassificationResult(BaseModel):
     requires_review: bool = False
     dual_llm_agreement: Optional[float] = None  # 0-1: how much the two LLMs agree
     dual_llm_disagreements: Optional[List[str]] = None  # List of fields where LLMs disagree
+    primary_analysis: Optional[Dict[str, Any]] = None
+    secondary_analysis: Optional[Dict[str, Any]] = None
+    summary: Optional[Dict[str, Any]] = None
 
 class HITLUpdate(BaseModel):
     doc_id: str
