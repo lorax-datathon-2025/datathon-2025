@@ -221,6 +221,39 @@ async def health():
     return {"status": "ok"}
 
 
+@app.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    """
+    Delete a document from both in-memory storage and database.
+    """
+    from .storage import DOCS_META, DOCS_TEXT, DOCS_IMAGES, DOCS_AUDIT
+    import os
+    
+    # Check if document exists
+    meta = get_meta(doc_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    # Delete file from disk if it exists
+    file_path = meta.get("path")
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception as e:
+            print(f"Warning: Could not delete file {file_path}: {e}")
+    
+    # Delete from in-memory storage
+    DOCS_META.pop(doc_id, None)
+    DOCS_TEXT.pop(doc_id, None)
+    DOCS_IMAGES.pop(doc_id, None)
+    DOCS_AUDIT.pop(doc_id, None)
+    
+    # Delete from database (if enabled)
+    db.delete_document_record(doc_id)
+    
+    return {"status": "deleted", "doc_id": doc_id}
+
+
 @app.get("/dashboard")
 async def dashboard_snapshot(limit: int = 50):
     """

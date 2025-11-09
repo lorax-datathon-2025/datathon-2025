@@ -8,6 +8,11 @@ import uuid, os, cv2, fitz, numpy as np
 import pytesseract
 from pytesseract import Output
 
+from dotenv import load_dotenv
+
+# Load environment variables before configuring pytesseract
+load_dotenv()
+
 default_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", default_path)
 

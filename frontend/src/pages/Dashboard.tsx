@@ -1,6 +1,6 @@
 // Dashboard.tsx
 import React, { useMemo, useState } from "react";
-import { FileText, CheckCircle, AlertTriangle, Lock, Eye, Search as SearchIcon, MoreHorizontal, Download, ShieldAlert, Users, Gauge, Loader2 } from "lucide-react";
+import { FileText, CheckCircle, AlertTriangle, Lock, Eye, Search as SearchIcon, MoreHorizontal, Download, ShieldAlert, Users, Gauge, Loader2, Trash2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,10 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { motion } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useDashboardData, type Category, type DashboardCounts } from "@/hooks/use-dashboard-data";
+import { deleteDocument } from "@/services/api";
+import { useQueryClient } from "@tanstack/react-query";
+import { DASHBOARD_QUERY_KEY } from "@/hooks/use-dashboard-data";
+import { useToast } from "@/hooks/use-toast";
 
 /* ------------------------ data shapes ------------------------ */
 type DocRow = {
@@ -75,9 +79,40 @@ const Dashboard: React.FC = () => {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<"All" | Category>("All");
   const [show, setShow] = useState<"All" | "Unsafe" | "NeedsReview">("All");
+  const [deletingDoc, setDeletingDoc] = useState<string | null>(null);
 
   const { data, error, isError, isLoading, isFetching } = useDashboardData(75);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const counts = data?.counts ?? EMPTY_COUNTS;
+
+  const handleDeleteDocument = async (docId: string, docName: string) => {
+    if (!confirm(`Are you sure you want to delete "${docName}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    setDeletingDoc(docId);
+    try {
+      await deleteDocument(docId);
+      
+      // Invalidate the dashboard query to refresh the list
+      queryClient.invalidateQueries({ queryKey: [DASHBOARD_QUERY_KEY] });
+      
+      toast({
+        title: "Document Deleted",
+        description: `"${docName}" has been successfully deleted.`,
+      });
+    } catch (error) {
+      console.error("Delete error:", error);
+      toast({
+        title: "Delete Failed",
+        description: error instanceof Error ? error.message : "Failed to delete document",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingDoc(null);
+    }
+  };
 
   const rows = useMemo<DocRow[]>(() => {
     if (!data?.documents) return [];
@@ -339,8 +374,12 @@ const Dashboard: React.FC = () => {
                     <TableCell className="text-right">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button size="icon" variant="ghost" className="h-8 w-8">
-                            <MoreHorizontal className="h-4 w-4" />
+                          <Button size="icon" variant="ghost" className="h-8 w-8" disabled={deletingDoc === d.id}>
+                            {deletingDoc === d.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <MoreHorizontal className="h-4 w-4" />
+                            )}
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end" className="w-44">
@@ -355,6 +394,13 @@ const Dashboard: React.FC = () => {
                           </DropdownMenuItem>
                           <DropdownMenuItem className="gap-2 text-rose-600 focus:text-rose-600">
                             <AlertTriangle className="h-4 w-4" /> Mark unsafe
+                          </DropdownMenuItem>
+                          <DropdownMenuItem 
+                            className="gap-2 text-rose-600 focus:text-rose-600" 
+                            onClick={() => handleDeleteDocument(d.id, d.name)}
+                            disabled={deletingDoc === d.id}
+                          >
+                            <Trash2 className="h-4 w-4" /> Delete document
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>

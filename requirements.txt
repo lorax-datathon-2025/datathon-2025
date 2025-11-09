@@ -10,3 +10,5 @@ pyyaml
 python-dotenv
 google-generativeai
 openai
+pytesseract
+opencv-python

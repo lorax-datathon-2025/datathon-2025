@@ -5,6 +5,8 @@ from datetime import datetime
 
 from . import db
 
+from . import db
+
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 os.makedirs(BASE_DIR, exist_ok=True)
 

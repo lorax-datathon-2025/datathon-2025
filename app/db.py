@@ -136,6 +136,23 @@ def update_doc_record(
     _execute(query, params)
 
 
+def delete_document_record(doc_id: str) -> None:
+    """
+    Delete a document and all its related records from the database.
+    """
+    if not _enabled():
+        return
+    
+    # Delete from classifications table
+    _execute("DELETE FROM classifications WHERE doc_id = ?", (doc_id,))
+    
+    # Delete from review_queue table
+    _execute("DELETE FROM review_queue WHERE doc_id = ?", (doc_id,))
+    
+    # Delete from docs table
+    _execute("DELETE FROM docs WHERE doc_id = ?", (doc_id,))
+
+
 def insert_classification_record(doc_id: str, result) -> None:
     if not _enabled():
         return
@@ -182,7 +199,7 @@ def insert_classification_record(doc_id: str, result) -> None:
     params_full = (
         doc_id,
         result.final_category,
-        result.secondary_tags,
+        secondary_tags_json,
         result.confidence,
         result.explanation,
         citations_json,
@@ -503,7 +520,103 @@ def _derive_counts(summary: dict, fallback_total: int, avg_confidence: float) ->
     }
 
 
+def _get_in_memory_dashboard(limit: int = 50) -> dict:
+    """
+    Fallback function to get dashboard data from in-memory storage when database is disabled.
+    """
+    from . import storage
+    
+    documents = []
+    total = 0
+    public_count = 0
+    confidential_count = 0
+    highly_sensitive_count = 0
+    unsafe_count = 0
+    needs_review_count = 0
+    total_confidence = 0.0
+    confidence_count = 0
+    
+    # Get all documents from in-memory storage
+    doc_items = list(storage.DOCS_META.items())
+    # Sort by most recent (we don't have timestamp in memory, so just reverse)
+    doc_items = doc_items[:limit]
+    
+    for doc_id, meta in doc_items:
+        classification = meta.get("classification")
+        
+        if classification:
+            final_category = classification.final_category or "Unclassified"
+            confidence = classification.confidence
+            requires_review = classification.requires_review
+            content_safety = classification.content_safety
+        else:
+            final_category = "Unclassified"
+            confidence = None
+            requires_review = False
+            content_safety = None
+        
+        # Build document object
+        doc = {
+            "docId": doc_id,
+            "filename": meta.get("filename", doc_id),
+            "uploadedAt": None,  # Not tracked in memory
+            "status": meta.get("status"),
+            "pageCount": meta.get("page_count"),
+            "imageCount": meta.get("image_count"),
+            "legibilityScore": meta.get("legibility_result"),
+            "finalCategory": final_category,
+            "requiresReview": requires_review,
+            "confidence": confidence,
+            "contentSafety": content_safety,
+            "classifiedAt": None,  # Not tracked in memory
+            "unsafe": final_category == "Unsafe",
+        }
+        documents.append(doc)
+        
+        # Update counts
+        total += 1
+        if final_category == "Public":
+            public_count += 1
+        elif final_category == "Confidential":
+            confidential_count += 1
+        elif final_category == "Highly Sensitive":
+            highly_sensitive_count += 1
+        elif final_category == "Unsafe":
+            unsafe_count += 1
+        
+        if requires_review:
+            needs_review_count += 1
+        
+        if confidence is not None:
+            total_confidence += confidence
+            confidence_count += 1
+    
+    avg_confidence = (total_confidence / confidence_count * 100) if confidence_count > 0 else 0.0
+    
+    counts = {
+        "total": total,
+        "public": public_count,
+        "confidential": confidential_count,
+        "highlySensitive": highly_sensitive_count,
+        "unsafe": unsafe_count,
+        "needsReview": needs_review_count,
+        "averageConfidence": round(avg_confidence, 1),
+    }
+    
+    return {
+        "documents": documents,
+        "counts": counts,
+        "summary": {},  # Empty summary for in-memory mode
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "limit": limit,
+    }
+
+
 def get_dashboard_snapshot(limit: int = 50) -> dict:
+    # If database is not enabled, fall back to in-memory storage
+    if not _enabled():
+        return _get_in_memory_dashboard(limit)
+    
     documents_raw = list_dashboard_documents(limit)
     summary = get_summary()
     avg_confidence = get_average_confidence()
