@@ -225,7 +225,12 @@ def _extract_docx_images(document: docx.Document) -> Tuple[List[Dict], List[floa
    legibility_scores: List[float] = []
 
    for rel in document.part.rels.values():
-       target = getattr(rel, "target_part", None)
+       if getattr(rel, "is_external", False):
+           continue
+       try:
+           target = rel.target_part
+       except ValueError:
+           continue
        if target is None:
            continue
        content_type = getattr(target, "content_type", "") or ""
