@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
 try:
@@ -401,4 +402,142 @@ def get_summary() -> dict:
         "by_status": status_rows,
         "by_category": category_rows,
         "by_requires_review": review_rows,
+    }
+
+
+def list_dashboard_documents(limit: int = 50) -> list[dict]:
+    """
+    Return the most recent documents along with their latest classification snapshot.
+    """
+
+    return _query_all(
+        """
+        WITH latest AS (
+            SELECT
+                doc_id,
+                final_category,
+                confidence,
+                requires_review,
+                content_safety,
+                page_count,
+                image_count,
+                legibility_score,
+                classified_at,
+                ROW_NUMBER() OVER (PARTITION BY doc_id ORDER BY classified_at DESC) AS row_num
+            FROM classifications
+        )
+        SELECT
+            d.doc_id,
+            d.filename,
+            d.uploaded_at,
+            d.status,
+            COALESCE(latest.page_count, d.page_count) AS page_count,
+            COALESCE(latest.image_count, d.image_count) AS image_count,
+            COALESCE(latest.legibility_score, d.legibility_score) AS legibility_score,
+            latest.final_category,
+            latest.confidence,
+            latest.requires_review,
+            latest.content_safety,
+            latest.classified_at
+        FROM docs d
+        LEFT JOIN latest
+            ON latest.doc_id = d.doc_id
+           AND latest.row_num = 1
+        ORDER BY d.uploaded_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+
+
+def get_average_confidence() -> float:
+    rows = _query_all("SELECT AVG(confidence) AS avg_confidence FROM classifications")
+    if not rows:
+        return 0.0
+    avg = rows[0].get("avg_confidence")
+    return float(avg) if avg is not None else 0.0
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _iso(value: Any) -> Optional[str]:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    if value is None:
+        return None
+    return str(value)
+
+
+def _derive_counts(summary: dict, fallback_total: int, avg_confidence: float) -> dict:
+    status_total = sum(row.get("count", 0) for row in summary.get("by_status", []))
+    category_rows = {
+        (row.get("final_category") or row.get("FINAL_CATEGORY") or ""): row.get(
+            "count", 0
+        )
+        for row in summary.get("by_category", [])
+    }
+    review_rows = {
+        str(row.get("requires_review")).strip().lower(): row.get("count", 0)
+        for row in summary.get("by_requires_review", [])
+    }
+    flagged = category_rows.get("Unsafe", 0)
+    needs_review = review_rows.get("true", 0)
+    return {
+        "total": status_total or fallback_total,
+        "public": category_rows.get("Public", 0),
+        "confidential": category_rows.get("Confidential", 0),
+        "highlySensitive": category_rows.get("Highly Sensitive", 0),
+        "unsafe": flagged,
+        "needsReview": needs_review,
+        "averageConfidence": round(avg_confidence * 100, 1),
+    }
+
+
+def get_dashboard_snapshot(limit: int = 50) -> dict:
+    documents_raw = list_dashboard_documents(limit)
+    summary = get_summary()
+    avg_confidence = get_average_confidence()
+
+    documents = []
+    for row in documents_raw:
+        final_category = row.get("final_category") or "Unclassified"
+        confidence = row.get("confidence")
+        confidence_value = float(confidence) if confidence is not None else None
+        requires_review = _coerce_bool(row.get("requires_review"))
+        documents.append(
+            {
+                "docId": row.get("doc_id"),
+                "filename": row.get("filename") or row.get("doc_id"),
+                "uploadedAt": _iso(row.get("uploaded_at")),
+                "status": row.get("status"),
+                "pageCount": row.get("page_count"),
+                "imageCount": row.get("image_count"),
+                "legibilityScore": row.get("legibility_score"),
+                "finalCategory": final_category,
+                "requiresReview": requires_review,
+                "confidence": confidence_value,
+                "contentSafety": row.get("content_safety"),
+                "classifiedAt": _iso(row.get("classified_at")),
+                "unsafe": final_category == "Unsafe",
+            }
+        )
+
+    counts = _derive_counts(summary, len(documents), avg_confidence)
+
+    return {
+        "documents": documents,
+        "counts": counts,
+        "summary": summary,
+        "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "limit": limit,
     }

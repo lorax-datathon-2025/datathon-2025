@@ -4,6 +4,7 @@ from typing import List
 import os
 import json
 
+from . import db
 from .models import (
     UploadResponse,
     ClassificationResult,
@@ -218,3 +219,11 @@ async def list_jobs():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/dashboard")
+async def dashboard_snapshot(limit: int = 50):
+    """
+    Provide a snapshot of recent documents and aggregate metrics for the dashboard UI.
+    """
+    return db.get_dashboard_snapshot(limit=limit)

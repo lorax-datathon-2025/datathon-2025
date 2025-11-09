@@ -1,20 +1,22 @@
 // Dashboard.tsx
 import React, { useMemo, useState } from "react";
-import { FileText, CheckCircle, AlertTriangle, Lock, Eye, Search as SearchIcon, MoreHorizontal, Download, ShieldAlert, Users, Gauge } from "lucide-react";
+import { FileText, CheckCircle, AlertTriangle, Lock, Eye, Search as SearchIcon, MoreHorizontal, Download, ShieldAlert, Users, Gauge, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { motion } from "framer-motion";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useDashboardData, type Category, type DashboardCounts } from "@/hooks/use-dashboard-data";
 
-/* ------------------------ mock data ------------------------ */
+/* ------------------------ data shapes ------------------------ */
 type DocRow = {
   id: string;
   name: string;
-  classification: "Public" | "Confidential" | "Highly Sensitive" | "Unsafe";
+  classification: Category;
   pages: number;
   images: number;
   unsafe: boolean;
@@ -23,13 +25,15 @@ type DocRow = {
   uploadedAt: string;
 };
 
-const mock: DocRow[] = [
-  { id: "TC1", name: "Marketing Brochure Q4 2024.pdf", classification: "Public", pages: 12, images: 8, unsafe: false, needsReview: false, confidence: 98, uploadedAt: "2024-01-15" },
-  { id: "TC2", name: "Employment Application - John Doe.pdf", classification: "Highly Sensitive", pages: 5, images: 1, unsafe: false, needsReview: true, confidence: 95, uploadedAt: "2024-01-14" },
-  { id: "TC3", name: "Internal Project Memo.docx", classification: "Confidential", pages: 3, images: 0, unsafe: false, needsReview: false, confidence: 92, uploadedAt: "2024-01-13" },
-  { id: "TC4", name: "Stealth Fighter.jpeg", classification: "Confidential", pages: 1, images: 1, unsafe: false, needsReview: true, confidence: 86, uploadedAt: "2024-01-12" },
-  { id: "TC5", name: "Mixed Content – Fighter + Unsafe.docx", classification: "Unsafe", pages: 7, images: 4, unsafe: true, needsReview: true, confidence: 80, uploadedAt: "2024-01-12" },
-];
+const EMPTY_COUNTS: DashboardCounts = {
+  total: 0,
+  public: 0,
+  confidential: 0,
+  highlySensitive: 0,
+  unsafe: 0,
+  needsReview: 0,
+  averageConfidence: 0,
+};
 
 /* ------------------------ helpers ------------------------ */
 const categoryBadge = (c: DocRow["classification"]) => {
@@ -42,6 +46,8 @@ const categoryBadge = (c: DocRow["classification"]) => {
       return { className: "bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/20", icon: <Lock className="h-3.5 w-3.5" /> };
     case "Unsafe":
       return { className: "bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/20", icon: <AlertTriangle className="h-3.5 w-3.5" /> };
+    default:
+      return { className: "bg-neutral-500/15 text-neutral-600 dark:text-neutral-300 border-neutral-500/20", icon: <ShieldAlert className="h-3.5 w-3.5" /> };
   }
 };
 
@@ -67,30 +73,56 @@ function avgConfidence(rows: { confidence: number }[]) {
 /* ------------------------ component ------------------------ */
 const Dashboard: React.FC = () => {
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<"All" | DocRow["classification"]>("All");
+  const [category, setCategory] = useState<"All" | Category>("All");
   const [show, setShow] = useState<"All" | "Unsafe" | "NeedsReview">("All");
 
-  const stats = useMemo(() => {
-    const total = mock.length;
-    return {
-      total,
-      public: mock.filter((d) => d.classification === "Public").length,
-      confidential: mock.filter((d) => d.classification === "Confidential").length,
-      sensitive: mock.filter((d) => d.classification === "Highly Sensitive").length,
-      unsafe: mock.filter((d) => d.classification === "Unsafe").length,
-    };
-  }, []);
+  const { data, error, isError, isLoading, isFetching } = useDashboardData(75);
+  const counts = data?.counts ?? EMPTY_COUNTS;
+
+  const rows = useMemo<DocRow[]>(() => {
+    if (!data?.documents) return [];
+    return data.documents.map((doc) => {
+      const rawConfidence = doc.confidence ?? 0;
+      const confidencePercent =
+        rawConfidence > 1
+          ? Math.round(Math.min(rawConfidence, 100))
+          : Math.round(Math.min(Math.max(rawConfidence, 0), 1) * 100);
+
+      return {
+        id: doc.docId,
+        name: doc.filename || doc.docId,
+        classification: doc.finalCategory,
+        pages: doc.pageCount ?? 0,
+        images: doc.imageCount ?? 0,
+        unsafe: doc.unsafe ?? doc.finalCategory === "Unsafe",
+        needsReview: doc.requiresReview,
+        confidence: confidencePercent,
+        uploadedAt: doc.uploadedAt ? new Date(doc.uploadedAt).toISOString().split("T")[0] : "—",
+      };
+    });
+  }, [data?.documents]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return mock.filter((d) => {
+    return rows.filter((d) => {
       if (category !== "All" && d.classification !== category) return false;
       if (show === "Unsafe" && !d.unsafe) return false;
       if (show === "NeedsReview" && !d.needsReview) return false;
       if (q && !`${d.id} ${d.name}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [query, category, show]);
+  }, [rows, query, category, show]);
+
+  const flaggedCount = counts.unsafe ?? rows.filter((d) => d.unsafe).length;
+  const needsReviewCount = counts.needsReview ?? rows.filter((d) => d.needsReview).length;
+  const averageConfidence = counts.averageConfidence ?? avgConfidence(rows);
+  const syncing = isFetching && !isLoading;
+  const showLoadingState = isLoading && rows.length === 0;
+  const errorMessage = isError
+    ? error instanceof Error
+      ? error.message
+      : "Unable to load Databricks data. Please try again."
+    : "";
 
   return (
     <div className="relative min-h-screen overflow-hidden">
@@ -150,7 +182,7 @@ const Dashboard: React.FC = () => {
       <div>
         <div className="text-xs font-medium text-rose-600">Flagged</div>
         <div className="mt-1 text-3xl font-bold text-rose-700 dark:text-rose-400">
-          {mock.filter((d) => d.unsafe).length}
+          {flaggedCount}
         </div>
       </div>
       <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-rose-500/15">
@@ -170,7 +202,7 @@ const Dashboard: React.FC = () => {
       <div>
         <div className="text-xs font-medium text-fuchsia-600">Needs review</div>
         <div className="mt-1 text-3xl font-bold text-fuchsia-700 dark:text-fuchsia-400">
-          {mock.filter((d) => d.needsReview).length}
+          {needsReviewCount}
         </div>
       </div>
       <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-fuchsia-500/15">
@@ -191,7 +223,7 @@ const Dashboard: React.FC = () => {
         <div className="text-xs font-medium text-indigo-600">Average confidence</div>
         <div className="mt-1 flex items-baseline gap-2">
           <div className="text-3xl font-bold text-indigo-700 dark:text-indigo-400">
-            {avgConfidence(mock)}%
+            {averageConfidence}%
           </div>
         </div>
       </div>
@@ -204,7 +236,7 @@ const Dashboard: React.FC = () => {
       <motion.div
         className="h-full bg-indigo-500"
         initial={{ width: 0 }}
-        animate={{ width: `${avgConfidence(mock)}%` }}
+        animate={{ width: `${averageConfidence}%` }}
         transition={{ duration: 0.7, ease: "easeOut", delay: 0.2 }}
       />
     </div>

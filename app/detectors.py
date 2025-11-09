@@ -55,9 +55,9 @@ def run_detectors(pages: Dict[int, str]) -> DetectorSignals:
                 Citation(page=page, snippet=snippet, source="detector_pii")
             )
 
-        if page == 1 and MEMO_PATTERN.search(text[:500]):
-            signals.has_internal_markers = True
-            signals.notes.append(f"Memo format detected on page {page}")
+        # if page == 1 and MEMO_PATTERN.search(text[:500]):
+        #     signals.has_internal_markers = True
+        #     signals.notes.append(f"Memo format detected on page {page}")
 
         # internal (whole word)
         if any(rx.search(lower) for rx in internal_regexes):
