@@ -8,6 +8,9 @@ import uuid, os, cv2, fitz, numpy as np
 import pytesseract
 from pytesseract import Output
 
+default_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", default_path)
+
 
 def extract_from_pdf(path: str) -> Tuple[Dict[int, str], int, float, List[Dict]]:
    """Extract text and images from PDF.
@@ -198,3 +201,7 @@ def extract_generic(path: str) -> Tuple[Dict[int, str], int, float, List[Dict]]:
    # fallback: treat as text
    with open(path, "r", errors="ignore") as f:
        return {1: f.read()}, 0, 0.0, []
+
+
+
+

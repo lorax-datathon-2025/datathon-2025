@@ -222,6 +222,7 @@ def classify_document(doc_id: str,
         agreement_score,
         disagreements,
         secondary_analysis,
+        legibility_score,
     )
     requires_review = bool(review_triggers)
 
@@ -350,6 +351,7 @@ def _collect_review_triggers(
     agreement_score: float,
     disagreements: List[str],
     secondary_analysis: Dict[str, Any],
+    legibility_score: Optional[float],
 ) -> List[str]:
     triggers: List[str] = []
     if final_confidence < 0.8:
@@ -362,6 +364,8 @@ def _collect_review_triggers(
         triggers.append("llm_disagreement")
     if secondary_analysis.get("needs_review"):
         triggers.append("secondary_llm_flag")
+    if legibility_score is not None and legibility_score <= 0.25:
+        triggers.append("legibility_low")
     return triggers
 
 
