@@ -24,22 +24,25 @@ The classification hierarchy follows a strict **severity ladder**:
 ## Key Features
 
  **Multistage classification pipeline**  
-Runs image analysis → text summarization → PII detection → unsafe content scan → confidentiality mapping → final decision synthesis.  
+- Runs image analysis → text summarization → PII detection → unsafe content scan → confidentiality mapping → final decision synthesis.  
 
  **YAML-driven policy configuration**  
-All prompts, roles, and rules are defined in `prompt_library.yaml`, making the system transparent, auditable, and customizable.
+- All prompts, roles, and rules are defined in `prompt_library.yaml`, making the system transparent, auditable, and customizable.
 
- **Explainable results**  
-Every classification includes:
-- Supporting citations (page-level snippets)
-- Detected features (PII, unsafe text)
-- Rationale and confidence score
-
+ **FastAPI Backend**
+- Lightweight and modular REST API built for rapid deployment.
+    
  **Image-aware analysis**  
-Scans embedded diagrams, IDs, and schematics for restricted or unsafe visual content.
+- Scans embedded diagrams, IDs, and schematics for restricted or unsafe visual content.
 
+ **Databricks Integration**
+- Secure data warehouse for storing classification results and generating analytical insights.
+
+ **Explainable AI**
+- Each classification includes reasoning, citations, and a confidence score.  
+    
  **Structured JSON output**  
-Machine-readable results ready for dashboards or downstream compliance tools.
+- Machine-readable results ready for dashboards or downstream compliance tools.
 
 ---
 
