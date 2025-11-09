@@ -2,6 +2,8 @@ import os
 import uuid
 from typing import Dict, Any
 
+from . import db
+
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
 os.makedirs(BASE_DIR, exist_ok=True)
 
@@ -21,6 +23,16 @@ def save_document(file_bytes: bytes, filename: str) -> str:
         "path": path,
         "status": "uploaded",
     }
+
+    db.insert_doc_record(
+        doc_id=doc_id,
+        filename=filename,
+        status="uploaded",
+        page_count=0,
+        image_count=0,
+        legibility_score=None,
+        source_path=path,
+    )
     return doc_id
 
 def save_extracted(doc_id: str, pages: Dict[int, str], images_count: int, images_data: list = None, legibility_result: float = 0.0):
@@ -34,6 +46,14 @@ def save_extracted(doc_id: str, pages: Dict[int, str], images_count: int, images
     DOCS_TEXT[doc_id] = pages
     if images_data:
         DOCS_IMAGES[doc_id] = images_data
+
+    db.update_doc_record(
+        doc_id=doc_id,
+        status="preprocessed",
+        page_count=len(pages),
+        image_count=images_count,
+        legibility_score=legibility_result,
+    )
 
 def get_document_pages(doc_id: str) -> Dict[int, str]:
     return DOCS_TEXT.get(doc_id, {})
@@ -51,6 +71,9 @@ def save_classification(doc_id: str, result: Any):
         "event": "auto_classification",
         "data": result
     })
+
+    db.update_doc_record(doc_id=doc_id, status="classified")
+    db.insert_classification_record(doc_id, result)
 
 def save_hitl_update(doc_id: str, update: dict):
     DOCS_META[doc_id]["status"] = "reviewed"
