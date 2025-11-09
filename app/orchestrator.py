@@ -7,6 +7,8 @@ from .models import ClassificationResult, Citation, DetectorSignals
 from .prompt_lib import get_prompt, get_prompt_flow
 from .secondary_llm import run_secondary_reasoning
 
+from . import db
+
 TRUNCATE_CHARS = 1200
 
 def _prepare_pages(pages: Dict[int, str]) -> Dict[int, str]:
@@ -225,6 +227,15 @@ def classify_document(doc_id: str,
         legibility_score,
     )
     requires_review = bool(review_triggers)
+    if requires_review:
+        priority = "high" if signals.has_unsafe_pattern else "normal"
+        db.upsert_review_queue(
+            doc_id=doc_id,
+            category=final_category_to_use or primary_analysis.get("category", "Unknown"),
+            confidence=final_confidence,
+            triggers=review_triggers,
+            priority=priority,
+        )
 
     summary = _build_summary_block(
         final_category_to_use,

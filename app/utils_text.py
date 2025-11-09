@@ -7,10 +7,6 @@ import base64
 import uuid, os, cv2, fitz, numpy as np
 import pytesseract
 from pytesseract import Output
-from dotenv import load_dotenv
-
-# Load environment variables before configuring pytesseract
-load_dotenv()
 
 default_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 pytesseract.pytesseract.tesseract_cmd = os.getenv("TESSERACT_CMD", default_path)
@@ -229,7 +225,12 @@ def _extract_docx_images(document: docx.Document) -> Tuple[List[Dict], List[floa
    legibility_scores: List[float] = []
 
    for rel in document.part.rels.values():
-       target = getattr(rel, "target_part", None)
+       if getattr(rel, "is_external", False):
+           continue
+       try:
+           target = rel.target_part
+       except ValueError:
+           continue
        if target is None:
            continue
        content_type = getattr(target, "content_type", "") or ""
