@@ -39,10 +39,10 @@ def get_meta(doc_id: str) -> dict:
 
 def save_classification(doc_id: str, result: Any):
     DOCS_META[doc_id]["status"] = "classified"
-    DOCS_META[doc_id]["classification"] = result.dict()
+    DOCS_META[doc_id]["classification"] = result
     DOCS_AUDIT.setdefault(doc_id, []).append({
         "event": "auto_classification",
-        "data": result.dict()
+        "data": result
     })
 
 def save_hitl_update(doc_id: str, update: dict):
