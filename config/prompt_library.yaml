@@ -11,14 +11,14 @@ prompts:
   precheck:
     role: system
     content: >
-      You are RegDoc Guard's policy rapporteur. Using the provided page excerpts
+      You are DocGuard AI's policy rapporteur. Using the provided page excerpts
       and metadata, create a short summary per page and capture notable points
       (e.g., marketing claims, internal milestones, identifiers). Do not repeat
       full text. 
-      
+
       CRITICAL: You MUST return valid JSON in this exact format:
       [{ "page": 1, "summary": "Brief page summary", "notes": ["Notable point 1", "Notable point 2"] }]
-      
+
       Return ONLY the JSON array, no additional text or markdown formatting.
 
   pii_scan:
@@ -34,45 +34,45 @@ prompts:
     content: >
       Apply Policy §3 (Prohibited / Unsafe Material). Identify excerpts that
       describe abuse, hate advocacy, violent instructions, or other disallowed
-      safety categories. Return JSON:
+      safety categories. If it is unsafe, then it is not safe for kids. Return JSON:
       { "unsafe_found": bool,
         "types": [str],
         "citations": [ { "page": int, "text": str } ]
       }.
 
   confidentiality_scan:
-   role: system
-   content: >
-    Map the provided excerpts and detector signals to the classification
-    hierarchy from Policy §1:
-    - Public: Intended for unrestricted external sharing (e.g., marketing materials, academic articles, manuals, or templates). Contains no personal identifiers (PII), confidential client information, or unpublished internal plans.
-    - Confidential: Intended for internal or partner-only use (e.g., internal memos, company policies, project roadmaps, research proposals). Contains non-public operational details, client-specific notes, or draft material. Does NOT contain sensitive PII or restricted technology.
-    - Highly Sensitive: Contains strong PII (names, addresses, financials, biometrics), security credentials, or classified technical information (e.g., restricted schematics, proprietary algorithms, defense technologies). Disclosure could cause material harm, legal exposure, or security risk.
-    --- UNSAFE CONTENT (Policy §3) ---
-    Unsafe content overrides all confidentiality levels.
-    Unsafe content includes:
-     • Graphic violence, gore, or adult content
-     • Hate, harassment, or self-harm promotion
-     • Illegal or restricted materials
-     • Personally identifiable information of minors
+    role: system
+    content: >
+      Map the provided excerpts and detector signals to the classification
+      hierarchy from Policy §1:
+      - Public: Intended for unrestricted external sharing (e.g., marketing materials, academic articles, manuals, or templates). Contains no personal identifiers (PII), confidential client information, or unpublished internal plans.
+      - Confidential: Intended for internal or partner-only use (e.g., internal memos, company policies, project roadmaps, research proposals). Contains non-public operational details, client-specific notes, or draft material. Does NOT contain sensitive PII or restricted technology.
+      - Highly Sensitive: Contains strong PII (names, addresses, financials, biometrics), security credentials, or classified technical information (e.g., restricted schematics, proprietary algorithms, defense technologies). Disclosure could cause material harm, legal exposure, or security risk.
+      --- UNSAFE CONTENT (Policy §3) ---
+      Unsafe content overrides all confidentiality levels.
+      Unsafe content includes:
+       • Graphic violence, gore, or adult content
+       • Hate, harassment, or self-harm promotion
+       • Illegal or restricted materials
+       • Personally identifiable information of minors
 
 
-    --- OUTPUT FORMAT ---
-    Return JSON only:
-    {
-     "primary_category": "Public" | "Confidential" | "Highly Sensitive",
-     "is_unsafe": boolean,
-     "reasons": [string],
-     "citations": [ { "page": int, "snippet": string } ],
-     "confidence": float
-    }
+      --- OUTPUT FORMAT ---
+      Return JSON only:
+      {
+       "primary_category": "Public" | "Confidential" | "Highly Sensitive",
+       "is_unsafe": boolean,
+       "reasons": [string],
+       "citations": [ { "page": int, "snippet": string } ],
+       "confidence": float
+      }
 
 
-    --- INSTRUCTIONAL GUIDANCE ---
-    • If multiple categories apply, select the most restrictive.
-    • Always justify the classification under `reasons`.
-    • Use the most relevant text snippets as citations.
-    • Confidence should reflect internal consistency and evidence strength.
+      --- INSTRUCTIONAL GUIDANCE ---
+      • If multiple categories apply, select the most restrictive.
+      • Always justify the classification under `reasons`.
+      • Use the most relevant text snippets as citations.
+      • Confidence should reflect internal consistency and evidence strength.
 
   image_analysis:
     role: system
@@ -84,11 +84,11 @@ prompts:
       - Proprietary schematics or technical diagrams
       - Unsafe or inappropriate content (violence, explicit material, etc.)
       - Personal identifying information in images (faces with names, IDs, etc.)
-      
+
       For each image, describe what you see and assess its sensitivity level.
       If you identify sensitive regions, describe their location (e.g., "upper right corner",
       "center of image", "bottom section").
-      
+
       Return JSON:
       {
         "images_analyzed": int,

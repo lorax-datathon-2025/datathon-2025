@@ -32,7 +32,7 @@ from .hitl import apply_hitl_update
 
 from .job_processor import process_batch_job 
 
-app = FastAPI(title="RegDoc Guardrail API", version="1.0")
+app = FastAPI(title="DocGuard AI API", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,

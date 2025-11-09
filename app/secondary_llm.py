@@ -21,7 +21,7 @@ else:  # pragma: no cover
 
 
 PROMPT_INSTRUCTIONS = """
-You are the secondary compliance adjudicator for RegDoc Guard. Your job is to review the provided
+You are the secondary compliance adjudicator for DocGuard AI. Your job is to review the provided
 document text (which is annotated with explicit page markers such as "=== Page 1 ===") and deliver a
 clear, JSON-only verdict about its sensitivity.
 
